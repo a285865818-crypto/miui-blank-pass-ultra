@@ -81,6 +81,14 @@ public class PermNullModule extends XposedModule {
             return;
         }
 
+        // 装 hook 之前先确认承载本模块代码的 APK 没被换签名重打包。
+        // 不匹配就静默跳过：重打包产物能装能开界面，但对任何应用都不生效。
+        // 每个进程只算一次，后续走缓存，开销可忽略。
+        if (!ModuleIntegrity.isTrusted(this)) {
+            safeLog(Log.ERROR, "module signature mismatch, refuse to hook " + pkg);
+            return;
+        }
+
         int mask = 0;
         try {
             SharedPreferences prefs = getRemotePreferences(Config.GROUP);

@@ -4,13 +4,15 @@
 # sdk.dir=/path/to/Android/Sdk
 
 # ---- 签名（不填则构建出未签名的包，仍可 assembleDebug）----
-SIGN_STORE_FILE=app/release.jks
+# 路径相对 app 模块目录，不要写成 app/xxx.jks（那会解析成 app/app/xxx.jks）。
+SIGN_STORE_FILE=release.jks
 SIGN_STORE_PASSWORD=你的 storePassword
 SIGN_KEY_ALIAS=你的 keyAlias
 SIGN_KEY_PASSWORD=你的 keyPassword
 
 # ---- 可选：期望的 APK 签名证书 SHA-256（小写 hex）----
-# 填了就会在启动时校验签名，不匹配直接杀进程（防重打包）。
+# 填了会在两处校验：模块界面进程不一致直接结束进程；目标应用进程
+# 不一致则不安装任何 hook（重打包产物因此变成空壳）。
 # 留空或删掉这一行 = 不校验，方便自己编译调试。
-# 取值：keytool -list -v -keystore app/release.jks -alias <别名> | grep SHA256
+# 取值：keytool -list -v -keystore <你的.keystore> -alias <别名> | grep SHA256
 # EXPECTED_SIG_SHA256=

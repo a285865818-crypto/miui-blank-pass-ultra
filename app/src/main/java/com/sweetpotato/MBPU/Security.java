@@ -14,14 +14,19 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 /**
- * 高强度安全校验层。
+ * 模块界面进程的安全校验层。
  *
- * native 层做三件事：
+ * native 层提供三项能力：
  *   1. 反调试（ptrace 自检、TracerPid、Frida 端口/文件、maps 注入检测）
  *   2. 签名校验（APK 签名证书 SHA-256 与构建时注入的期望值比对，防止重打包）
  *   3. 反注入（检测可疑 so）
  *
- * 任一项不过就 abort()，让进程直接崩溃。
+ * 三者的处置力度刻意不同：<b>只有签名校验会终止进程</b>。
+ * 反调试与反注入仅写日志——HyperOS 的 SELinux 会误伤 ptrace 检测，
+ * root 设备上 KernelSU / Magisk 也可能触发误判，直接杀进程会让正常用户闪退。
+ *
+ * 另见 {@link ModuleIntegrity}：目标应用进程里没有本类覆盖，
+ * 那边单独做一次签名校验，不匹配则跳过安装 hook。
  */
 public final class Security {
 
@@ -85,10 +90,11 @@ public final class Security {
 
     /**
      * 在 App.onCreate() 最早处调用。
-     * 校验失败会 abort()，不会继续运行。
+     * 签名不符会结束进程；反调试与反注入只记录日志。
      *
      * 注意：只在模块自身的 UI 进程调用（Application.onCreate 只在模块进程触发），
-     * 目标进程中模块代码是被 hook 注入的，不会走这里。
+     * 目标进程中模块代码是被 hook 注入的，不会走这里——那条路径由
+     * {@link ModuleIntegrity} 负责。
      */
     public static void verify(Context context) {
         if (context == null) return;

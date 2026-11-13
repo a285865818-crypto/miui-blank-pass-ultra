@@ -90,24 +90,68 @@ cp local.properties.example local.properties   # 填入 sdk.dir 与签名信息
 - native 安全层用系统 clang + NDK sysroot 手动交叉编译（`build_native.sh`），因为官方 NDK 的 `ndk-build` / `cmake` 依赖 x86_64 host 工具
 - 签名信息全部来自 `local.properties`，仓库里没有任何 keystore 和密码
 - 没配签名时 `assembleDebug` 仍可正常出未签名包
-- 少数 aarch64 环境里 SDK 自带的 aapt2 跑不起来，可以用 `AAPT2_OVERRIDE=/path/to/aapt2 ./build.sh` 指向替代品，脚本会自动加 `-Pandroid.aapt2FromMavenOverride`
+- `./build.sh debug` 出未优化的 debug 包，只用来排查问题；Compose 在 debug 下滚动会明显掉帧
+- **aarch64 机器上必须指定 aapt2**：SDK 自带的 aapt2 是 x86-64 二进制，直接跑会报 `Daemon startup failed`。两条路：用 ARM 原生版本，或用 qemu 包装
+
+```bash
+# 方案一：ARM 原生 aapt2（推荐，无需翻译层）
+AAPT2_OVERRIDE=/path/to/arm64/aapt2 ./build.sh
+
+# 方案二：qemu 包装 SDK 自带的那份
+printf '#!/bin/sh\nexec /usr/bin/qemu-x86_64 -L /usr/x86_64-linux-gnu %s "$@"\n' \
+    "$ANDROID_HOME/build-tools/36.0.0/aapt2" > /tmp/aapt2-wrap
+chmod +x /tmp/aapt2-wrap
+AAPT2_OVERRIDE=/tmp/aapt2-wrap ./build.sh
+```
+
+脚本会自动加 `-Pandroid.aapt2FromMavenOverride=<指定路径>`，不需要改 `gradle.properties`。
 
 ## 签名校验
 
-模块启动时会计算自身 APK 的签名证书 SHA-256，与 `BuildConfig.EXPECTED_SIG_SHA256` 比对，不一致直接结束进程（防重打包）。
+期望值从 `local.properties` 的 `EXPECTED_SIG_SHA256` 注入，**不写进源码**。留空 = 不校验，适合自己编译调试；填了 = 严格校验。
 
-这个期望值从 `local.properties` 的 `EXPECTED_SIG_SHA256` 注入，**不写进源码**：
+校验分两层，因为模块的代码会跑在两类完全不同的进程里：
 
-- 留空 → 完全不校验，随便编译随便跑
-- 填了 → 严格校验，适合自己发版
+**1. 模块自己的界面进程**（`App.onCreate` → `Security.verify`）
+签名不符直接结束进程。这一层拦住的是「装了个假界面」。
 
-取值方式（`app/release.jks` 需自行生成，仓库不含任何 keystore）：
+**2. 目标应用进程**（`PermNullModule.install` → `ModuleIntegrity`）
+hook 代码被框架注入到别的应用进程里，不会经过 `App.onCreate`，上面那层覆盖不到这里。所以在真正安装 hook 之前，再核对一次承载模块代码的 APK 签名：
+
+- 通过 `getModuleApplicationInfo()` 拿到框架实际加载的那份 APK 路径
+- 用 `PackageManager.getPackageArchiveInfo` 取出签名证书，算 SHA-256 比对
+- 每个进程只算一次，结果缓存，后续不产生开销
+- **不匹配就跳过安装**，不装任何 hook，也绝不终止目标进程
+
+这层的意义是：重打包产物能装、能打开界面，但对任何目标应用都不生效，等于空壳。
+
+取值方式（keystore 需自行生成，仓库不含任何 keystore 与密码）：
 
 ```bash
-keytool -list -v -keystore app/release.jks -alias <别名> | grep SHA256
+keytool -list -v -keystore <你的.keystore> -alias <别名> | grep SHA256
 ```
 
-对应的 native 层只负责比对，自身不烧任何哈希。
+对应 native 层只负责比对，自身不烧任何哈希。
+
+## 官方包指纹
+
+官方发布的 APK 由固定证书签名，证书 SHA-256 为：
+
+```
+ebe065a95b248ca8e9d98a4f8e4a9e3877b30e1a3b61833e9a34cf41c29dc0d0
+```
+
+安装前可以自己核对拿到的包是不是这个证书签的：
+
+```bash
+apksigner verify --print-certs 你的包.apk
+```
+
+看输出里的 `Signer #1 certificate SHA-256 digest` 是否一致。不一致就是别人改过重签的版本，不要装。
+
+从源码自行编译的包签名必然不同，那是正常的——这类包在 `EXPECTED_SIG_SHA256` 留空时不做任何校验，只在你自己填了期望值时才按你的证书校验。
+
+这条公示挡不住有备而来的伪造者，但能让「假包冒充官方包」这件事当场暴露。
 
 ## 目录结构
 
@@ -137,8 +181,12 @@ build.sh / build_native.sh                  构建脚本
 
 ## 许可证
 
-[PolyForm Noncommercial 1.0.0](LICENSE)
+[PolyForm Strict 1.0.0](LICENSE)
 
-个人使用、学习研究、修改与再分发都可以；**禁止商业用途**——包括作为商业产品的一部分、在商业运营中部署、或收费分发。这不是 OSI 定义的开源许可证。
+允许你做的：个人研究、实验、测试、学习、私人娱乐、业余爱好项目，以及慈善、教育、公共研究、公共安全与卫生、环保、政府机构的使用。
+
+不允许的：**分发这个软件**、**修改它或基于它做衍生作品**、以及**任何商业用途**。这不是 OSI 定义的开源许可证——它比常见的开源许可严格得多，请按「可以自己用，不能改、不能传、不能卖」来理解。
+
+需要修改或再分发请先联系作者取得书面授权。
 
 作者：ETA & 地瓜
