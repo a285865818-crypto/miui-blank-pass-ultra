@@ -33,7 +33,32 @@
 
 ## 截图
 
-截图放在 `docs/screenshots/`（不入库，因为图中可能带设备状态与联系方式）。建议顺序：浅色主页 → 语言列表 → 诊断页 → 温馨提示 → 关于页。
+<table>
+<tr>
+<td><img src="docs/screenshots/01-home.jpg" width="100%"></td>
+<td><img src="docs/screenshots/02-batch.jpg" width="100%"></td>
+<td><img src="docs/screenshots/03-sort.jpg" width="100%"></td>
+<td><img src="docs/screenshots/04-help.jpg" width="100%"></td>
+</tr>
+<tr>
+<td align="center">主页</td>
+<td align="center">批量选择</td>
+<td align="center">排序与系统应用</td>
+<td align="center">温馨提示</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/05-settings.jpg" width="100%"></td>
+<td><img src="docs/screenshots/06-theme.jpg" width="100%"></td>
+<td><img src="docs/screenshots/07-diagnostics.jpg" width="100%"></td>
+<td><img src="docs/screenshots/08-about.jpg" width="100%"></td>
+</tr>
+<tr>
+<td align="center">设置</td>
+<td align="center">主题与高级材质</td>
+<td align="center">诊断</td>
+<td align="center">关于</td>
+</tr>
+</table>
 
 ## 环境要求
 

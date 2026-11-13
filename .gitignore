@@ -27,8 +27,5 @@ tr/
 keys.json
 fixblend.py
 
-# 截图含设备状态，按需本地放入
-docs/screenshots/
-
 # 本地推送脚本（含账号信息，仅本地使用）
 push_to_github.sh
