@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="language_entries">
+        <item>zh-CN|简体中文</item>
+        <item>zh-HK|繁體中文（中國香港）</item>
+        <item>zh-TW|繁體中文（中國台灣）</item>
+        <item>ug|ئۇيغۇرچە</item>
+        <item>bo|བོད་སྐད་</item>
+        <item>en-US|English (United States)</item>
+        <item>en-GB|English (United Kingdom)</item>
+        <item>fr|Français</item>
+        <item>de|Deutsch</item>
+        <item>it|Italiano</item>
+        <item>tr|Türkçe</item>
+        <item>nl|Nederlands</item>
+        <item>ru|Русский</item>
+        <item>es-ES|Español (España)</item>
+        <item>es-419|Español (Latinoamérica)</item>
+        <item>pt-PT|Português (Portugal)</item>
+        <item>pt-BR|Português (Brasil)</item>
+        <item>ar|العربية</item>
+        <item>ja|日本語</item>
+        <item>ko|한국어</item>
+    </string-array>
+</resources>

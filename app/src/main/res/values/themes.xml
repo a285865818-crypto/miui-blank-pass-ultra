@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      窗口背景必须与 Miuix 的 surface 一致。
+      没有 windowBackground 时，冷启动系统会先画一帧纯白窗口，
+      等 Compose 首帧（深色主题）出来才变黑——表现就是"先白屏再进主页"。
+      浅色主题下 Miuix surface 接近 #F5F5F5。
+    -->
+    <style name="Theme.PermNull" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:colorBackground">@color/window_background</item>
+    </style>
+</resources>

@@ -1,0 +1,16 @@
+# 复制为 local.properties 后按需填写。这个文件不会入库（.gitignore 已排除）。
+
+# Android SDK 位置（Android Studio 一般会自动写入）
+# sdk.dir=/path/to/Android/Sdk
+
+# ---- 签名（不填则构建出未签名的包，仍可 assembleDebug）----
+SIGN_STORE_FILE=app/release.jks
+SIGN_STORE_PASSWORD=你的 storePassword
+SIGN_KEY_ALIAS=你的 keyAlias
+SIGN_KEY_PASSWORD=你的 keyPassword
+
+# ---- 可选：期望的 APK 签名证书 SHA-256（小写 hex）----
+# 填了就会在启动时校验签名，不匹配直接杀进程（防重打包）。
+# 留空或删掉这一行 = 不校验，方便自己编译调试。
+# 取值：keytool -list -v -keystore app/release.jks -alias <别名> | grep SHA256
+# EXPECTED_SIG_SHA256=

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      深色主题：父主题换成 Material.NoActionBar，窗口底色为纯黑。
+      与 Miuix 深色 surface（实测 #000000）一致，冷启动不再先白一帧。
+    -->
+    <style name="Theme.PermNull" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:colorBackground">@color/window_background</item>
+    </style>
+</resources>
