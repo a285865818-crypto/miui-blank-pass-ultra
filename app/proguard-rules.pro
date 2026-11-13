@@ -3,14 +3,14 @@
 -keep,allowoptimization public class * extends io.github.libxposed.api.XposedModule {
     public <init>();
 }
--keep class com.sweetpotato.MBPU.PermNullModule { *; }
+-keep class io.github.sweetpotato_digua.mbpu.PermNullModule { *; }
 
 # service 层的 Provider 由系统按清单实例化。
 -keep class io.github.libxposed.service.** { *; }
 
 # ===== 混淆强度 =====
 # 类成员统一重命名（默认已开启）。这里额外压缩包名层级，
-# 让逆向时看到的包结构失去语义（com.sweetpotato.MBPU.xxx -> a.b.c）。
+# 让逆向时看到的包结构失去语义（io.github.sweetpotato_digua.mbpu.xxx -> a.b.c）。
 -repackageclasses ''
 -allowaccessmodification
 
@@ -29,10 +29,10 @@
 
 # ===== native 安全层 =====
 # JNI 方法名必须保持原名，否则 native 链接失败。
--keep class com.sweetpotato.MBPU.Security {
+-keep class io.github.sweetpotato_digua.mbpu.Security {
     private static native <methods>;
     public static void verify(android.content.Context);
 }
--keepclasseswithmembers class com.sweetpotato.MBPU.Security {
+-keepclasseswithmembers class io.github.sweetpotato_digua.mbpu.Security {
     native <methods>;
 }

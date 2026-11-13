@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU
+package io.github.sweetpotato_digua.mbpu
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme

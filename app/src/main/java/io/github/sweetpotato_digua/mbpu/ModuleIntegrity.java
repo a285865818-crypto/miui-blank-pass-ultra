@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU;
+package io.github.sweetpotato_digua.mbpu;
 
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;

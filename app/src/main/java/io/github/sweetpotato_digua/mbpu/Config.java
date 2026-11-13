@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU;
+package io.github.sweetpotato_digua.mbpu;
 
 import java.util.Collections;
 import java.util.HashSet;
@@ -18,7 +18,7 @@ public final class Config {
 
     /** RemotePreferences 的 group 名，模块 app 与 hook 进程共用 */
     /** 模块自身包名。列表里要排除，重启计划里也要排除。 */
-    public static final String MODULE_PKG = "com.sweetpotato.MBPU";
+    public static final String MODULE_PKG = "io.github.sweetpotato_digua.mbpu";
     public static final String GROUP = "config";
     public static final String KEY_PREFIX = "cfg:";
 

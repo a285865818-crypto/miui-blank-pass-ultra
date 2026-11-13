@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU
+package io.github.sweetpotato_digua.mbpu
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues

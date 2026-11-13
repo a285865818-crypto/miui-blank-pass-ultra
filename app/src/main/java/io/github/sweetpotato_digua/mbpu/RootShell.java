@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU;
+package io.github.sweetpotato_digua.mbpu;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;

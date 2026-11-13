@@ -102,7 +102,7 @@ static int check_frida_files(void) {
  * 这样即使 Java 层被 hook 绕过，native 层还有一次机会。
  */
 JNIEXPORT jboolean JNICALL
-Java_com_sweetpotato_MBPU_Security_nativeCheckSig(JNIEnv *env, jclass clazz,
+Java_io_github_sweetpotato_1digua_mbpu_Security_nativeCheckSig(JNIEnv *env, jclass clazz,
                                                   jstring expected_hash,
                                                   jstring sig_hash) {
     if (sig_hash == NULL) return JNI_FALSE;
@@ -131,7 +131,7 @@ Java_com_sweetpotato_MBPU_Security_nativeCheckSig(JNIEnv *env, jclass clazz,
 /* ===== 3. 反调试入口 ===== */
 
 JNIEXPORT jboolean JNICALL
-Java_com_sweetpotato_MBPU_Security_nativeAntiDebug(JNIEnv *env, jclass clazz) {
+Java_io_github_sweetpotato_1digua_mbpu_Security_nativeAntiDebug(JNIEnv *env, jclass clazz) {
     /* ptrace 自检：必须在主线程启动早期调用，且只调用一次 */
     if (check_ptrace()) return JNI_TRUE;
     if (check_tracer_pid()) return JNI_TRUE;
@@ -146,7 +146,7 @@ Java_com_sweetpotato_MBPU_Security_nativeAntiDebug(JNIEnv *env, jclass clazz) {
  * 不检测 Xposed 自身的 hook（否则误伤自己）。 */
 
 JNIEXPORT jint JNICALL
-Java_com_sweetpotato_MBPU_Security_nativeIntegrity(JNIEnv *env, jclass clazz) {
+Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegrity(JNIEnv *env, jclass clazz) {
     /*
      * 读取自己的 maps，检测可疑的注入 so。
      * 注：Xposed/LSPosed 的 so 也会被列出来，需要排除。

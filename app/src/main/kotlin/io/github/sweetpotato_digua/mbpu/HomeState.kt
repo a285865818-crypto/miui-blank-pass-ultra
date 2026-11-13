@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU
+package io.github.sweetpotato_digua.mbpu
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf

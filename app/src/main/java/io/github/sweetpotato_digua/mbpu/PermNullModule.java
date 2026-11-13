@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU;
+package io.github.sweetpotato_digua.mbpu;
 
 import android.content.SharedPreferences;
 import android.os.Build;
@@ -78,7 +78,7 @@ public class PermNullModule extends XposedModule {
     }
 
     private void install(String phase, String pkg, ClassLoader cl) {
-        if ("com.sweetpotato.MBPU".equals(pkg)) return;
+        if ("io.github.sweetpotato_digua.mbpu".equals(pkg)) return;
         if (cl == null) {
             safeLog(Log.WARN, phase + " " + pkg + " classLoader=null");
             return;

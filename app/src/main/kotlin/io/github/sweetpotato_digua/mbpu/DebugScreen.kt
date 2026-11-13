@@ -1,4 +1,4 @@
-package com.sweetpotato.MBPU
+package io.github.sweetpotato_digua.mbpu
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -767,7 +767,7 @@ private fun readLogBundle(): LogBundle {
     val script = buildString {
         append("f=\$(ls -t /data/adb/lspd/log/modules_*.log 2>/dev/null | head -1); ")
         append("[ -n \"\$f\" ] || exit 3; ")
-        append("grep -F 'com.sweetpotato.MBPU' \"\$f\" | tail -n ")
+        append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\" | tail -n ")
         append(LOG_TAIL_LINES * 4)
         append("; echo ").append(LOG_SEPARATOR).append("; ")
         append("grep -F 'HOOKSTAT|' \"\$f\" | ")
@@ -845,7 +845,7 @@ private fun readFullLog(): String {
     val script = buildString {
         append("f=\$(ls -t /data/adb/lspd/log/modules_*.log 2>/dev/null | head -1); ")
         append("[ -n \"\$f\" ] || exit 3; ")
-        append("grep -F 'com.sweetpotato.MBPU' \"\$f\" | tail -n 4000")
+        append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\" | tail -n 4000")
     }
     val result = RootShell.exec(script)
     if (result.exitCode == 3) throw IllegalStateException("no log file")

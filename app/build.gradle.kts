@@ -16,16 +16,16 @@ val signStoreFileName: String? = localProps.getProperty("SIGN_STORE_FILE")
 val expectedSigHash: String = localProps.getProperty("EXPECTED_SIG_SHA256") ?: ""
 
 android {
-    namespace = "com.sweetpotato.MBPU"
+    namespace = "io.github.sweetpotato_digua.mbpu"
     compileSdk = 37
     compileSdkMinor = 0
 
     defaultConfig {
-        applicationId = "com.sweetpotato.MBPU"
+        applicationId = "io.github.sweetpotato_digua.mbpu"
         minSdk = 29
         targetSdk = 37
-        versionCode = 6
-        versionName = "1.2.3"
+        versionCode = 7
+        versionName = "1.3.0"
         // 期望的签名证书 SHA-256（小写 hex）。留空 = 不校验签名，方便他人构建。
         buildConfigField("String", "EXPECTED_SIG_SHA256", "\"$expectedSigHash\"")
         ndk {

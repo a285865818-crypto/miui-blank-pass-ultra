@@ -156,8 +156,8 @@ apksigner verify --print-certs 你的包.apk
 ## 目录结构
 
 ```
-app/src/main/java/com/sweetpotato/MBPU/     Hook、配置、Root、安全校验（Java）
-app/src/main/kotlin/com/sweetpotato/MBPU/   Compose UI（Miuix）
+app/src/main/java/io/github/sweetpotato_digua/mbpu/     Hook、配置、Root、安全校验（Java）
+app/src/main/kotlin/io/github/sweetpotato_digua/mbpu/   Compose UI（Miuix）
 app/src/main/cpp/security.c                 native 安全层：反调试 + 签名比对 + 反注入
 app/src/main/jniLibs/                       预编译 native 产物（arm64-v8a / armeabi-v7a / x86_64）
 app/src/main/res/values*/strings.xml        20 种语言
