@@ -40,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.semantics.Role
@@ -146,9 +147,12 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
     // 关键：必须在 Activity RESUMED 时才轮询。Compose 的 LaunchedEffect 只看组合，
     // 退到后台/息屏时组合仍然存在，while(isActive) 会一直成立——否则诊断页会在后台
     // 每 5 秒 fork 一次 su，是明确的耗电问题。
-    val hostActivity = remember(context) { context.findHostActivity() }
-    LaunchedEffect(hostActivity) {
-        val owner = hostActivity ?: return@LaunchedEffect
+    // 和主页同一个坑：findHostActivity() 在这个 Composition 里返回 null，
+    // 协程随即静默 return，日志区永远显示「暂无日志」。用 Compose 提供的
+    // LifecycleOwner，它由 setContent 注入，一定存在。
+    val hostOwner = LocalLifecycleOwner.current
+    LaunchedEffect(hostOwner) {
+        val owner = hostOwner
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (isActive) {
                 val bundle = withContext(Dispatchers.IO) {
@@ -306,7 +310,10 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 220.dp)
+                        // 必须给出有限的 max：外层 Column 用了 verticalScroll，
+                        // 高度上限是 Infinity，传到这里会让内层 verticalScroll
+                        // 在测量时抛 IllegalStateException（诊断页闪退的原因）。
+                        .heightIn(min = 220.dp, max = 420.dp)
                         .padding(12.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -328,7 +335,7 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                         )
                         else -> Box(
                             modifier = Modifier
-                                .fillMaxSize()
+                                .fillMaxWidth()
                                 .verticalScroll(logScroll),
                         ) {
                             Column {
