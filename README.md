@@ -29,7 +29,7 @@
 - 单应用精细开关 + 批量开启 / 关闭，自动向 LSPosed 申请作用域
 - 每张卡片带 Hook 状态圆点：绿 = 全部注入，红 = 部分失败，灰 = 尚未注入
 - 诊断页：运行状态、配置数量、按包名 / 级别筛选模块日志、一键导出到系统下载目录或自定义目录
-- 20 种语言：简繁中文、维吾尔语、藏语、英语（US / GB）、法语、德语、意大利语、土耳其语、荷兰语、俄语、西班牙语（ES / 拉美）、葡萄牙语（PT / BR）、阿拉伯语（RTL）、日语、韩语
+- 20 种语言：简体中文、繁体中文（香港 / 台湾）、维吾尔语、藏语、英语（US / GB）、法语、德语、意大利语、土耳其语、荷兰语、俄语、西班牙语（ES / 拉美）、葡萄牙语（PT / BR）、阿拉伯语（RTL）、日语、韩语
 
 ## 截图
 
@@ -62,7 +62,7 @@
 
 ## 环境要求
 
-- Android 11 及以上（minSdk 29，targetSdk 37）
+- Android 10 及以上（minSdk 29，targetSdk 37）
 - LSPosed（modern Xposed API，`minApiVersion=101`、`targetApiVersion=102`）
 - Root 只在诊断页读取模块日志时需要，模块本体不需要
 
@@ -101,7 +101,7 @@ cp local.properties.example local.properties   # 填入 sdk.dir 与签名信息
 - 留空 → 完全不校验，随便编译随便跑
 - 填了 → 严格校验，适合自己发版
 
-取值方式：
+取值方式（`app/release.jks` 需自行生成，仓库不含任何 keystore）：
 
 ```bash
 keytool -list -v -keystore app/release.jks -alias <别名> | grep SHA256
@@ -115,8 +115,10 @@ keytool -list -v -keystore app/release.jks -alias <别名> | grep SHA256
 app/src/main/java/com/sweetpotato/MBPU/     Hook、配置、Root、安全校验（Java）
 app/src/main/kotlin/com/sweetpotato/MBPU/   Compose UI（Miuix）
 app/src/main/cpp/security.c                 native 安全层：反调试 + 签名比对 + 反注入
+app/src/main/jniLibs/                       预编译 native 产物（arm64-v8a / armeabi-v7a / x86_64）
 app/src/main/res/values*/strings.xml        20 种语言
 app/src/main/resources/META-INF/xposed/     modern Xposed 模块声明
+docs/screenshots/                           README 引用的界面截图
 build.sh / build_native.sh                  构建脚本
 ```
 
@@ -135,6 +137,8 @@ build.sh / build_native.sh                  构建脚本
 
 ## 许可证
 
-[GPL-3.0](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE)
+
+个人使用、学习研究、修改与再分发都可以；**禁止商业用途**——包括作为商业产品的一部分、在商业运营中部署、或收费分发。这不是 OSI 定义的开源许可证。
 
 作者：ETA & 地瓜
