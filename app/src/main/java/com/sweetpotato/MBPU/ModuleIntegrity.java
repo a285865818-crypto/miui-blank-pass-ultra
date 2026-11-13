@@ -1,6 +1,5 @@
 package com.sweetpotato.MBPU;
 
-import android.app.Application;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -29,45 +28,57 @@ import io.github.libxposed.api.XposedInterface;
  */
 final class ModuleIntegrity {
 
-    /** 每个进程只算一次；null 表示还没校验过。 */
+    /** 每个进程只算一次：null 表示还没得出确定结论，会继续重试。 */
     private static volatile Boolean trusted;
 
     private ModuleIntegrity() {
     }
 
     /**
-     * 当前进程加载的模块是否可信。同一进程内重复调用只做一次实际校验，
-     * 后续直接读缓存，不产生额外开销。
+     * 当前进程加载的模块是否可信。
+     *
+     * @return {@code TRUE} 通过，{@code FALSE} 确认不匹配，
+     *         {@code null} 本轮还拿不到签名（通常是进程启动太早，
+     *         Application 尚未创建），调用方应当推迟而不是放行。
      */
-    static boolean isTrusted(XposedInterface xposed) {
+    static Boolean isTrusted(XposedInterface xposed) {
         Boolean cached = trusted;
         if (cached != null) {
             return cached;
         }
         synchronized (ModuleIntegrity.class) {
             if (trusted == null) {
-                trusted = check(xposed);
+                Boolean result = check(xposed);
+                // 只有拿到确定结论才缓存，避免一次过早的探测把结果钉死。
+                if (result != null) {
+                    trusted = result;
+                }
+                return result;
             }
             return trusted;
         }
     }
 
-    private static boolean check(XposedInterface xposed) {
+    private static Boolean check(XposedInterface xposed) {
         String expected = BuildConfig.EXPECTED_SIG_SHA256;
         if (expected == null) {
             expected = "";
         }
         // 未配置期望值：源码自行编译的产物，无从比对，一律放行。
         if (expected.isEmpty()) {
-            return true;
+            return Boolean.TRUE;
         }
 
         String actual = computeModuleSigHash(xposed);
-        // 配了期望值却读不到签名，说明 APK 结构异常或被改动，按不可信处理。
         if (actual.isEmpty()) {
-            return false;
+            // 拿不到签名不代表不可信，只是这次太早。返回 null 让调用方稍后重试。
+            android.util.Log.w("MBPU_SEC", "module sig not readable yet, defer");
+            return null;
         }
-        return expected.equalsIgnoreCase(actual);
+        boolean ok = expected.equalsIgnoreCase(actual);
+        android.util.Log.i("MBPU_SEC", "module sig verified=" + ok
+                + " prefix=" + actual.substring(0, Math.min(8, actual.length())));
+        return ok;
     }
 
     /**
@@ -80,6 +91,13 @@ final class ModuleIntegrity {
         try {
             ApplicationInfo info = xposed.getModuleApplicationInfo();
             if (info == null || info.sourceDir == null) {
+                android.util.Log.w("MBPU_SEC", "diag: appInfo=" + info);
+                return "";
+            }
+
+            java.io.File apk = new java.io.File(info.sourceDir);
+            if (!apk.exists() || !apk.canRead()) {
+                android.util.Log.w("MBPU_SEC", "diag: apk not readable: " + info.sourceDir);
                 return "";
             }
 
@@ -93,6 +111,7 @@ final class ModuleIntegrity {
                     : PackageManager.GET_SIGNATURES;
             PackageInfo pi = pm.getPackageArchiveInfo(info.sourceDir, flags);
             if (pi == null) {
+                android.util.Log.w("MBPU_SEC", "diag: pkgArchiveInfo=null");
                 return "";
             }
 
@@ -105,6 +124,7 @@ final class ModuleIntegrity {
                 sigs = legacy;
             }
             if (sigs == null || sigs.length == 0) {
+                android.util.Log.w("MBPU_SEC", "diag: sigs=null");
                 return "";
             }
 
@@ -116,22 +136,41 @@ final class ModuleIntegrity {
             }
             return sb.toString();
         } catch (Throwable t) {
+            android.util.Log.w("MBPU_SEC", "diag: throw " + t);
             return "";
         }
     }
 
     /**
-     * 目标进程里没有可直接引用的 Context，通过 ActivityThread 取当前
-     * Application 再拿 PackageManager。取不到返回 null，由调用方按不可信处理。
+     * 取当前进程的 PackageManager。失败返回 null。
+     *
+     * <p>踩过的坑，别再走回头路：
+     * <ul>
+     *   <li>{@code ActivityThread.getPackageManager()} 返回的是
+     *       {@code IPackageManager}（Binder 代理），不是
+     *       {@code android.content.PackageManager}，反射拿到也没法用。</li>
+     *   <li>{@code currentApplication()} 在 {@code onPackageLoaded} 阶段
+     *       还是 null，要到 {@code onPackageReady} 才有值。</li>
+     * </ul>
+     * 所以这里按可用性依次尝试，取不到就返回 null，由调用方当作
+     * 「尚未确定」处理，而不是直接判定不可信。
      */
     private static PackageManager currentPackageManager() {
         try {
-            Class<?> activityThread = Class.forName("android.app.ActivityThread");
-            Method current = activityThread.getDeclaredMethod("currentApplication");
-            current.setAccessible(true);
-            Object app = current.invoke(null);
-            if (app instanceof Application) {
-                return ((Application) app).getPackageManager();
+            Object app = Class.forName("android.app.ActivityThread")
+                    .getDeclaredMethod("currentApplication")
+                    .invoke(null);
+            if (app instanceof android.content.Context) {
+                return ((android.content.Context) app).getPackageManager();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object app = Class.forName("android.app.AppGlobals")
+                    .getDeclaredMethod("getInitialApplication")
+                    .invoke(null);
+            if (app instanceof android.content.Context) {
+                return ((android.content.Context) app).getPackageManager();
             }
         } catch (Throwable ignored) {
         }

@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
@@ -605,9 +606,17 @@ internal fun PermNullScreen(
     //   - 下拉刷新或点「刷新模块状态」时 refreshTick++，重新从快速档开始。
     // 目标进程以自身 UID 运行，无法写模块私有目录，日志是唯一可靠通道。
     var refreshTick by remember { mutableIntStateOf(0) }
-    val hostActivity = remember(context) { context.findHostActivity() }
-    LaunchedEffect(refreshTick, hostActivity) {
-        val owner = hostActivity ?: return@LaunchedEffect
+    // LifecycleOwner 直接取 Compose 提供的那个，不用 LocalActivity /
+    // context.findHostActivity()。两者在这个 Composition 里都会拿到 null
+    // （实测日志 no host LifecycleOwner），协程随即静默 return，界面就永远停在
+    // 「尚未注入」——看起来像 hook 没生效，实际只是状态读不到。别再用它们。
+    val hostOwner = LocalLifecycleOwner.current
+    LaunchedEffect(refreshTick, hostOwner) {
+        val owner = hostOwner
+        if (owner == null) {
+            android.util.Log.w("MBPU_UI", "no host LifecycleOwner, hook stats disabled")
+            return@LaunchedEffect
+        }
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             var interval = 3_000L
             while (true) {
@@ -615,7 +624,7 @@ internal fun PermNullScreen(
                     runCatching { readHookStats() }.getOrDefault(emptyMap())
                 }
                 // 成功读到空结果也要提交：日志清空/轮转后不该永远保留旧绿点/红点。
-            home.hookStats = stats
+                home.hookStats = stats
                 delay(interval)
                 interval = (interval * 2).coerceAtMost(30_000L)
             }
@@ -626,8 +635,8 @@ internal fun PermNullScreen(
     // 之前每张可见卡片各挂一个无限协程（589 项就有 589 个 timer），
     // 后台也继续跑；现在收敛到一个，且只在 RESUMED 时推进。
     var clockTick by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(hostActivity) {
-        val owner = hostActivity ?: return@LaunchedEffect
+    LaunchedEffect(hostOwner) {
+        val owner = hostOwner ?: return@LaunchedEffect
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
                 clockTick = System.currentTimeMillis()
@@ -2195,7 +2204,13 @@ private fun readHookStats(): Map<String, HookStat> {
         append("awk -F'|' '{last[$2]=$0} END {for (k in last) print last[k]}'")
     }
     val result = RootShell.exec(script)
-    if (!result.ok()) return emptyMap()
+    if (!result.ok()) {
+        // 区分「读不到」和「真的没注入」：su 被拒 / 日志不存在都会走到这里。
+        // 以前一律返回空表，界面于是把「读不到」显示成「尚未注入」，误导性很强。
+        android.util.Log.w("MBPU_UI", "readHookStats failed: exit=" + result.exitCode
+                + " out=" + result.output.take(120))
+        return emptyMap()
+    }
     // 主进程与子进程分开记录：同一个包可能同时有 pkg 和 pkg:remote 两份注入。
     val mainStats = LinkedHashMap<String, HookStat>()
     val childStats = LinkedHashMap<String, HookStat>()

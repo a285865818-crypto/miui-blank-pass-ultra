@@ -24,6 +24,9 @@ public class PermNullModule extends XposedModule {
     /** 同进程可能加载多个包/实际 ClassLoader，按二者身份去重，不能只用进程级 Boolean。 */
     private final Set<HookTarget> installed = ConcurrentHashMap.newKeySet();
 
+    /** 正在等待签名校验结论的包名，避免多次回调重复起线程。 */
+    private final Set<String> sigRetryPending = ConcurrentHashMap.newKeySet();
+
     private static final class HookTarget {
         final String pkg;
         final ClassLoader loader;
@@ -83,8 +86,14 @@ public class PermNullModule extends XposedModule {
 
         // 装 hook 之前先确认承载本模块代码的 APK 没被换签名重打包。
         // 不匹配就静默跳过：重打包产物能装能开界面，但对任何应用都不生效。
-        // 每个进程只算一次，后续走缓存，开销可忽略。
-        if (!ModuleIntegrity.isTrusted(this)) {
+        Boolean sigOk = ModuleIntegrity.isTrusted(this);
+        if (sigOk == null) {
+            // 进程刚起步时 Application 还没创建，取不到 PackageManager。
+            // 不判负也不判正，交给后台重试——那个阶段一定拿得到。
+            scheduleSigRetry(phase, pkg, cl);
+            return;
+        }
+        if (!sigOk) {
             safeLog(Log.ERROR, "module signature mismatch, refuse to hook " + pkg);
             return;
         }
@@ -131,6 +140,50 @@ public class PermNullModule extends XposedModule {
      * 输出可被诊断页解析的统计行：HOOKSTAT|进程名|成功数|总数。
      * 走 module.log，随 LSPosed 写入 modules_*.log，是当前唯一可靠的跨进程通道。
      */
+    /**
+     * 签名校验拿不到结论时的后台重试。
+     *
+     * <p>LSPosed 只在 onPackageLoaded / onPackageReady 两个时机回调，而这两个
+     * 时机都可能早于 Application 创建，此时取不到 PackageManager。实测有的应用
+     * 只有前两次回调，靠后续回调兜底并不可靠，所以这里主动起一个短命线程，
+     * 每隔 400ms 重试一次，最多 5 次（约 2 秒）后放弃。
+     *
+     * <p>放弃时只记日志、不装 hook：宁可少装，也不能给重打包产物放行。
+     * 同一进程内按包名去重，避免多次回调堆起一堆线程。
+     */
+    private void scheduleSigRetry(String phase, String pkg, ClassLoader cl) {
+        if (!sigRetryPending.add(pkg)) {
+            return;
+        }
+        Thread t = new Thread(() -> {
+            try {
+                for (int i = 0; i < 5; i++) {
+                    try {
+                        Thread.sleep(400);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    Boolean ok = ModuleIntegrity.isTrusted(this);
+                    if (ok == null) {
+                        continue;
+                    }
+                    if (ok) {
+                        install(phase + "/retry" + i, pkg, cl);
+                    } else {
+                        safeLog(Log.ERROR, "module signature mismatch, refuse to hook " + pkg);
+                    }
+                    return;
+                }
+                safeLog(Log.WARN, "signature check unresolved for " + pkg + ", hook skipped");
+            } finally {
+                sigRetryPending.remove(pkg);
+            }
+        }, "MBPU-sigretry");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private void reportStatus(String processName, int ok, int total) {
         try {
             log(android.util.Log.INFO, TAG,
