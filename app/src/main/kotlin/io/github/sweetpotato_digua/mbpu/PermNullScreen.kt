@@ -621,10 +621,13 @@ internal fun PermNullScreen(
             var interval = 3_000L
             while (true) {
                 val stats = withContext(Dispatchers.IO) {
-                    runCatching { readHookStats() }.getOrDefault(emptyMap())
+                    runCatching { readHookStats() }.getOrNull()
                 }
+                // null 表示「读不到」（su 被拒 / 日志未生成 / 超时），与「确实没注入」是两件事。
+                // 之前两者都返回空表，界面把读不到显示成「尚未注入」，误导性极强。
+                home.hookStatsReadable = stats != null
                 // 成功读到空结果也要提交：日志清空/轮转后不该永远保留旧绿点/红点。
-                home.hookStats = stats
+                home.hookStats = stats ?: emptyMap()
                 delay(interval)
                 interval = (interval * 2).coerceAtMost(30_000L)
             }
@@ -1155,6 +1158,7 @@ internal fun PermNullScreen(
                             mask = mask,
                             changedAt = app.changedAt,
                             hookStat = home.hookStats[app.packageName],
+                            hookStatsReadable = home.hookStatsReadable,
                             selecting = selecting,
                             selected = app.packageName in selected,
                             onLongPress = {
@@ -1265,6 +1269,7 @@ internal fun PermNullScreen(
                             mask = mask,
                             changedAt = app.changedAt,
                             hookStat = home.hookStats[app.packageName],
+                            hookStatsReadable = home.hookStatsReadable,
                             selecting = selecting,
                             selected = app.packageName in selected,
                             onLongPress = {
@@ -1472,8 +1477,14 @@ internal fun PermNullScreen(
                         ) {
                             backToTopRunning = true
                             scope.launch {
-                                listState.animateScrollToItem(0)
-                                backToTopRunning = false
+                                // animateScrollToItem 会被新手势取消并抛 CancellationException，
+                                // 复位必须放 finally：否则动画一被打断，backToTopRunning 永远是 true，
+                                // 回顶按钮从此不再出现，只能退出页面才能恢复。
+                                try {
+                                    listState.animateScrollToItem(0)
+                                } finally {
+                                    backToTopRunning = false
+                                }
                             }
                         },
                     contentAlignment = Alignment.Center,
@@ -1854,8 +1865,10 @@ private fun AppListCard(
     modifier: Modifier = Modifier,
     mask: Int,
     changedAt: Long = 0L,
-    /** 注入统计；null 表示尚未注入（进程没启动过）。 */
+    /** 注入统计；null 表示尚未注入（进程没启动过），或整表读取失败（见 [hookStatsReadable]）。 */
     hookStat: HookStat? = null,
+    /** false 表示 hookStats 整体读取失败；此时 hookStat 为 null 不代表「未注入」，而是「状态未知」。 */
+    hookStatsReadable: Boolean = true,
     selecting: Boolean,
     selected: Boolean,
     onLongPress: () -> Unit,
@@ -1963,7 +1976,11 @@ private fun AppListCard(
                     // 灰 = 进程还没启动过（不算异常）。
                     // 颜色只作辅助：异常时右侧同时给出数字，不用只靠红绿区分。
                     val stat = hookStat
+                    // 三种「没有数字」要分开：读不到日志是「状态未知」，读到了但没这个包才是「尚未注入」。
                     val (dotColor, dotDesc) = when {
+                        stat == null && !hookStatsReadable ->
+                            MiuixTheme.colorScheme.onBackgroundVariant to
+                                stringResource(R.string.hook_state_unknown)
                         stat == null -> MiuixTheme.colorScheme.onBackgroundVariant to
                             stringResource(R.string.hook_state_none)
                         !stat.complete -> AppColors.dotPartial to
@@ -2191,8 +2208,13 @@ private fun requestScope(
     }
 }
 
-/** 从 LSPosed 模块日志读取 HOOKSTAT 标记，返回 包名 -> 注入统计。 */
-private fun readHookStats(): Map<String, HookStat> {
+/**
+ * 从 LSPosed 模块日志读取 HOOKSTAT 标记，返回 包名 -> 注入统计。
+ *
+ * 返回 null 表示「读不到」（su 被拒 / 超时 / 日志文件未生成），与「返回空表 = 确实没有注入记录」
+ * 是两种不同语义，调用方必须区分，不能都当成「尚未注入」。
+ */
+private fun readHookStats(): Map<String, HookStat>? {
     // 在 root 侧用 awk 完成"按进程名保留最后一条"，只回传最终结果。
     // 好处：1) 不受日志长度影响，旧记录被挤出窗口也能命中；
     //      2) 回传量从数百行降到一个包一行，减少 Binder/管道开销。
@@ -2205,11 +2227,10 @@ private fun readHookStats(): Map<String, HookStat> {
     }
     val result = RootShell.exec(script)
     if (!result.ok()) {
-        // 区分「读不到」和「真的没注入」：su 被拒 / 日志不存在都会走到这里。
-        // 以前一律返回空表，界面于是把「读不到」显示成「尚未注入」，误导性很强。
+        // 读不到 ≠ 没有注入。返回 null 让界面显示「状态未知」，不要谎报「尚未注入」。
         android.util.Log.w("MBPU_UI", "readHookStats failed: exit=" + result.exitCode
                 + " out=" + result.output.take(120))
-        return emptyMap()
+        return null
     }
     // 主进程与子进程分开记录：同一个包可能同时有 pkg 和 pkg:remote 两份注入。
     val mainStats = LinkedHashMap<String, HookStat>()

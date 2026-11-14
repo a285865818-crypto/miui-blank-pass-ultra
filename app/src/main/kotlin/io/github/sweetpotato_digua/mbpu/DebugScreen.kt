@@ -165,8 +165,10 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                         runCatching { RootShell.available() }.getOrDefault(false)
                     }
                     logError = context.getString(
-                        if (isRoot) R.string.debug_log_no_root
-                        else R.string.debug_log_empty,
+                        // root 可用却读失败 → 只可能是没有日志文件（模块还没注入过任何目标应用），
+                        // 此时应提示「暂无日志」；root 不可用才是真正的权限问题。
+                        if (isRoot) R.string.debug_log_empty
+                        else R.string.debug_log_no_root,
                     )
                 } else {
                     logError = null
@@ -805,7 +807,12 @@ private fun trimLogLine(raw: String): String {
             Regex("""^\[\s*\S+\s+\d+:\s*\d+:\s*\d+\s+[VDIWEF]/LSPosedFramework\s*\]\s*"""),
             "",
         )
-        .replace(Regex("""\(\S+?\)\[com\.sweetpotato\.MBPU,[^\]]*\]\s*"""), "")
+        // 包名从 Config 取，别再硬编码字面量：之前写死了旧包名 com.sweetpotato.MBPU，
+        // 包名迁移后这条正则永远匹配不上，诊断页每行都挂着整段模块标识。
+        .replace(
+            Regex("""\(\S+?\)\[${Regex.escape(Config.MODULE_PKG)},[^\]]*\]\s*"""),
+            "",
+        )
         .trim()
     return listOf(level, message).filter { it.isNotEmpty() }.joinToString(" ")
         .ifEmpty { raw }

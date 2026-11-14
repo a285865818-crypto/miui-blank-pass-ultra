@@ -39,6 +39,14 @@ internal class HomeState {
     /** 目标进程回传的 Hook 统计：包名 -> 注入数量。 */
     var hookStats by mutableStateOf(emptyMap<String, HookStat>())
     /**
+     * 本次 hookStats 是否真的读到了。
+     *
+     * false 表示读取失败（su 被拒、超时、日志文件还没生成）。这时 [hookStats] 里的 null
+     * 只代表「没拿到数据」，不代表「目标应用没注入」——界面上必须区分这两种含义，
+     * 否则一次读取失败就会把全部已启用应用的点标成「尚未注入」，让人误以为模块全线失效。
+     */
+    var hookStatsReadable by mutableStateOf(true)
+    /**
      * 待展示的一次性错误提示。
      *
      * 加载/刷新失败发生在主页之外（AppRoot），之前直接弹系统 Toast，样式与主页的
