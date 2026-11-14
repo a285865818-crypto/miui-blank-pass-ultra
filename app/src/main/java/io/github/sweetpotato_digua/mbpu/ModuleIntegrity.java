@@ -46,43 +46,65 @@ final class ModuleIntegrity {
         if (cached != null) {
             return cached;
         }
+        // check() 里是 PM 反射 + APK 解析 + SHA-256，属于重活，
+        // 挪到锁外执行；类锁只保护 trusted 的写入（M17）。
+        Boolean result = check(xposed);
         synchronized (ModuleIntegrity.class) {
-            if (trusted == null) {
-                Boolean result = check(xposed);
+            if (trusted == null && result != null) {
                 // 只有拿到确定结论才缓存，避免一次过早的探测把结果钉死。
-                if (result != null) {
-                    trusted = result;
-                }
-                return result;
+                trusted = result;
             }
-            return trusted;
+            return trusted != null ? trusted : result;
         }
     }
 
+    /**
+     * 归一化签名证书 SHA-256：去空白、去冒号、转小写。
+     * 与 {@link Security#normalizeHex} 保持同一规则（keytool 输出是
+     * 大写 + 冒号分隔的 96 字符，不归一化必然比对失败）。
+     *
+     * @return 64 位小写 hex；长度不符（含 {@code null}）返回 {@code ""}，视为未配置
+     */
+    private static String normalizeHex(String s) {
+        if (s == null) return "";
+        String t = s.trim().replace(":", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
+        return t.length() == 64 ? t : "";
+    }
+
     private static Boolean check(XposedInterface xposed) {
-        String expected = BuildConfig.EXPECTED_SIG_SHA256;
-        if (expected == null) {
-            expected = "";
-        }
+        // 期望值过 normalizeHex：去冒号、转小写，长度非 64 视为未配置（H10）。
+        String expected = normalizeHex(BuildConfig.EXPECTED_SIG_SHA256);
         // 未配置期望值：源码自行编译的产物，无从比对，一律放行。
         if (expected.isEmpty()) {
             return Boolean.TRUE;
         }
 
         String actual = computeModuleSigHash(xposed);
-        if (actual.isEmpty()) {
+        if (actual == null) {
             // 拿不到签名不代表不可信，只是这次太早。返回 null 让调用方稍后重试。
             android.util.Log.w("MBPU_SEC", "module sig not readable yet, defer");
             return null;
         }
-        boolean ok = expected.equalsIgnoreCase(actual);
+        actual = normalizeHex(actual);
+        if (actual.isEmpty()) {
+            // 实际 hash 归一化后不是 64 位 hex，属于异常情况：当作读取失败延后重试，
+            // 不下「签名不符」的结论。
+            android.util.Log.w("MBPU_SEC", "module sig malformed, defer");
+            return null;
+        }
+        // 两边都已归一化（小写、无冒号、64 位），直接 equals（H10）。
+        boolean ok = expected.equals(actual);
         android.util.Log.i("MBPU_SEC", "module sig verified=" + ok
                 + " prefix=" + actual.substring(0, Math.min(8, actual.length())));
         return ok;
     }
 
     /**
-     * 计算模块 APK 的签名证书 SHA-256（小写十六进制）。失败返回空串。
+     * 计算模块 APK 的签名证书 SHA-256（小写十六进制）。
+     *
+     * <p>三态返回，与 {@link Security#computeSigHash} 一致：
+     * {@code null} = 读取失败（走延后重试）；64 位 hex = 计算成功。
+     * 空串只保留给极端兜底（不应出现）。
      *
      * <p>路径取自 libxposed 的 {@code getModuleApplicationInfo()}，它指向
      * 框架实际加载的那份 APK，比从 PackageManager 按包名反查更贴近事实。
@@ -92,18 +114,18 @@ final class ModuleIntegrity {
             ApplicationInfo info = xposed.getModuleApplicationInfo();
             if (info == null || info.sourceDir == null) {
                 android.util.Log.w("MBPU_SEC", "diag: appInfo=" + info);
-                return "";
+                return null;   // 读不到
             }
 
             java.io.File apk = new java.io.File(info.sourceDir);
             if (!apk.exists() || !apk.canRead()) {
                 android.util.Log.w("MBPU_SEC", "diag: apk not readable: " + info.sourceDir);
-                return "";
+                return null;   // 读不到
             }
 
             PackageManager pm = currentPackageManager();
             if (pm == null) {
-                return "";
+                return null;   // 读不到
             }
 
             int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
@@ -112,7 +134,7 @@ final class ModuleIntegrity {
             PackageInfo pi = pm.getPackageArchiveInfo(info.sourceDir, flags);
             if (pi == null) {
                 android.util.Log.w("MBPU_SEC", "diag: pkgArchiveInfo=null");
-                return "";
+                return null;   // 读不到
             }
 
             Signature[] sigs;
@@ -125,19 +147,25 @@ final class ModuleIntegrity {
             }
             if (sigs == null || sigs.length == 0) {
                 android.util.Log.w("MBPU_SEC", "diag: sigs=null");
-                return "";
+                return null;   // 读不到
             }
 
             MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(sigs[0].toByteArray());
-            StringBuilder sb = new StringBuilder(64);
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
+            // 多签名 APK 下 signatures 数组顺序不保证，收集全部 hash 排序后取最小，结果才稳定（L21）。
+            java.util.List<String> hashes = new java.util.ArrayList<>(sigs.length);
+            for (Signature s : sigs) {
+                byte[] hash = md.digest(s.toByteArray());
+                StringBuilder sb = new StringBuilder(64);
+                for (byte b : hash) {
+                    sb.append(String.format("%02x", b));
+                }
+                hashes.add(sb.toString());
             }
-            return sb.toString();
+            java.util.Collections.sort(hashes);
+            return hashes.get(0);
         } catch (Throwable t) {
             android.util.Log.w("MBPU_SEC", "diag: throw " + t);
-            return "";
+            return null;   // 读不到
         }
     }
 

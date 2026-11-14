@@ -2,7 +2,6 @@ package io.github.sweetpotato_digua.mbpu;
 
 import android.content.Context;
 import android.content.res.Configuration;
-import android.os.Build;
 import android.os.LocaleList;
 
 import java.util.ArrayList;
@@ -66,7 +65,8 @@ public final class Languages {
         for (String[] row : TABLE) {
             if (row[0].equals(code)) return row[1];
         }
-        return TABLE[0][1];
+        // 未知代码回显原值；返回「跟随系统」会把异常配置伪装成正常状态。
+        return code;
     }
 
     /** 根据当前 Locale 猜一个默认语言，用于「跟随系统」时显示 */
@@ -77,6 +77,12 @@ public final class Languages {
             if (row[0].equalsIgnoreCase(tag)) return row[0];
         }
         String lang = system.getLanguage();
+        // 西语系先认 419（拉丁美洲），再退任意区域，避免拉美用户落到 es-ES。
+        if ("es".equals(lang)) {
+            for (String[] row : TABLE) {
+                if (row[0].equals(lang + "-419")) return row[0];
+            }
+        }
         for (String[] row : TABLE) {
             if (row[0].startsWith(lang + "-")) return row[0];
         }
@@ -115,12 +121,10 @@ public final class Languages {
     public static Context wrap(Context context, String code) {
         Locale locale = toLocale(code);
         if (locale == null) return context;
-        Locale.setDefault(locale);
+        // 不在 wrap 里 Locale.setDefault：那是改全局默认 Locale，切回「跟随系统」
+        // 时不恢复。全局默认的维护在 AppTheme 统一负责。
         Configuration config = new Configuration(context.getResources().getConfiguration());
-        config.setLocale(locale);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            config.setLocales(new LocaleList(locale));
-        }
+        config.setLocales(new LocaleList(locale));
         return context.createConfigurationContext(config);
     }
 }

@@ -31,9 +31,14 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
         // 高强度安全校验：签名校验 + 反调试 + 反注入。
-        // 校验失败 abort()，进程直接崩溃，不给逆向者继续分析的机会。
-        // 必须放在最前面：防止后续初始化逻辑在被调试时被执行。
-        Security.verify(this);
+        // L15：校验失败是 killProcess（非 abort），表现为静默秒退、不产生 crash 记录。
+        // M16：外层 try/catch 防 loadLibrary 失败/UnsatisfiedLinkError/ExceptionInInitializerError
+        // 直接终结 onCreate；Security 内部 killProcess 不会被 catch 救回。
+        try {
+            Security.verify(this);
+        } catch (Throwable t) {
+            android.util.Log.e("MBPU", "Security.verify failed", t);
+        }
         // 主题模式必须在使用前就位，否则首帧会用错配色再跳变
         store = new Store(this);
         AppThemeState.INSTANCE.init(store);

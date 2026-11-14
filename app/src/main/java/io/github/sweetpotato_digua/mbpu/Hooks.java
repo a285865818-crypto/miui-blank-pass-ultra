@@ -68,6 +68,9 @@ final class Hooks {
             installPermissionRequest(granted);
         }
         if (Config.has(mask, Config.STORAGE)) installStorageFiles();
+        // H5 修复：SMS 类别会把 SEND_SMS 伪装成已授予，但发送路径没拦——
+        // 应用真持权限时短信会真发出去（扣费/隐私）。补 SmsManager 全部 no-op。
+        if (Config.has(mask, Config.SMS)) installSmsSend();
         installResolver();
         if (Config.has(mask, Config.LOCATION)) installLocation();
         if (Config.has(mask, Config.CLIPBOARD)) installClipboard();
@@ -108,6 +111,10 @@ final class Hooks {
             XposedInterface.HookBuilder builder = module.hook(m);
             if (passthrough) {
                 builder.setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH);
+            } else {
+                // M1 修复：显式声明 PROTECTIVE（fail-safe），不依赖框架对 DEFAULT 的解析。
+                // hooker 里未捕获异常被吞成默认返回值，不会原样抛进宿主调用栈。
+                builder.setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE);
             }
             builder.intercept(hooker);
             okCount++;
@@ -120,8 +127,10 @@ final class Hooks {
         }
     }
 
-    private static boolean blockedFile(Uri uri, String[] authorities) throws FileNotFoundException {
-        if (!blocked(uri, authorities)) return false;
+    // L1 修复：此方法只抛异常、不返回 true，原先调用点写成
+    // `if (...) return null;` 的分支永不执行，掩盖真实语义。改为 void，命中即抛。
+    private static void failIfBlocked(Uri uri, String[] authorities) throws FileNotFoundException {
+        if (!blocked(uri, authorities)) return;
         throw new FileNotFoundException("blocked by PermNull");
     }
 
@@ -144,7 +153,17 @@ final class Hooks {
                 break;
             }
         }
-        if (projection == null || projection.length == 0) return new String[]{"_id"};
+        if (projection == null || projection.length == 0) {
+            // H1 修复：projection 为 null 是 ContentResolver.query 的合法用法
+            // （系统真实 provider 此时返回全列）。之前只返回 _id，调用方
+            // getColumnIndexOrThrow("display_name") 会抛 IllegalArgumentException 崩宿主。
+            // 这里返回一份「安全兜底超集」——不是精确 schema，只是让常见列名查找不炸。
+            return new String[]{
+                    "_id", "display_name", "address", "body", "date", "type", "thread_id",
+                    "data1", "lookup", "_data", "mime_type", "width", "height", "size",
+                    "name", "value",
+            };
+        }
         // 不直接复用调用者数组；空结果最多保留合法的有限 schema。
         int count = Math.min(projection.length, 256);
         String[] result = new String[count];
@@ -157,6 +176,11 @@ final class Hooks {
 
     private static MatrixCursor emptyCursor(List<Object> args) {
         return new MatrixCursor(emptyCursorProjection(args), 0);
+    }
+
+    /** H2：insert 命中屏蔽时返回的合成 URI，避免调用方 ContentUris.parseId(null) NPE。 */
+    private static Uri blockedInsertUri() {
+        return Uri.parse("content://mbpu-blocked/0");
     }
 
     // ------------------------------------------------------------- permission
@@ -322,44 +346,17 @@ final class Hooks {
     }
 
     // ------------------------------------------------------------ storage files
+    // L2 修复：原 STORAGE_ROOTS / blockedStoragePath / pathOf 三个成员全部无调用者（死代码），
+    // 但 Javadoc 仍宣称存在文件级屏蔽，误导后来者。已删除；实际语义见 installStorageFiles。
 
-    /** 外部存储根路径；只拦截这些前缀，避免影响应用读写自己的私有目录。 */
-    private static final String[] STORAGE_ROOTS = {
-            "/storage/emulated/0", "/sdcard", "/storage/self/primary",
-    };
-
-    /** 判断路径是否属于"该被屏蔽的外部存储"，排除应用自己的 Android/data|media 目录。 */
-    private boolean blockedStoragePath(String path) {
-        if (path == null) return false;
-        String p = path;
-        boolean underStorage = false;
-        for (String root : STORAGE_ROOTS) {
-            if (p.equals(root) || p.startsWith(root + "/")) {
-                underStorage = true;
-                break;
-            }
-        }
-        if (!underStorage) return false;
-        // 自己的目录放行，否则应用连自身缓存/SDCard 目录都写不了，会直接崩。
-        // p 是绝对路径（/storage/emulated/0/Android/data/<pkg>/...），
-        // 不能直接 startsWith("/Android/data/<pkg>")——那永远 false。
-        // 用 contains 判断段边界。
-        String selfData = "/Android/data/" + pkg + "/";
-        String selfMedia = "/Android/media/" + pkg + "/";
-        return !(p.contains(selfData) || p.contains(selfMedia));
-    }
-
-    private static String pathOf(File f) {
-        try {
-            return f == null ? null : f.getAbsolutePath();
-        } catch (Throwable t) {
-            return null;
-        }
-    }
 
     /**
-     * 文件级屏蔽：应用自检显示"有全部文件权限"，但列目录为空、读文件失败。
-     * 只作用于外部存储，且放行应用自身目录，保证应用本身还能正常运行。
+    /**
+     * 文件级屏蔽（实际只做「特殊权限自检」伪装）：
+     * <p>M7 说明：不 hook {@code java.io.File} / {@code FileInputStream}，
+     * 真实文件读取靠系统 fuse 层拒绝。对已真实持有 READ_EXTERNAL_STORAGE 的应用，
+     * File API 会全通——这是有意的行为边界。若要更严格屏蔽需 hook File.list/listFiles，
+     * 但实测会让应用启动扫描外部存储时直接退出。
      */
     private void installStorageFiles() {
         // 1) 特殊权限自检：Environment.isExternalStorageManager() 恒为 true
@@ -447,7 +444,7 @@ final class Hooks {
                 // 与 applyBatch 同类，首参是 authority 不是 Uri，必须在 Uri 过滤前拦。
                 if (m.getName().equals("call") && pt[0] == String.class) {
                     hook(m, chain -> blockedAuthority((String) chain.getArg(0), authorities)
-                            ? null : chain.proceed());
+                            ? new android.os.Bundle() : chain.proceed());
                     continue;
                 }
                 if (pt[0] != Uri.class) continue;
@@ -457,8 +454,10 @@ final class Hooks {
                                 ? emptyCursor(chain.getArgs()) : chain.proceed());
                         break;
                     case "insert":
+                        // H2 修复：之前返回 null，调用方 ContentUris.parseId(res.uri) 立刻 NPE。
+                        // 与 emptyBatchResult 一致，返回 URI 形态。
                         hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? null : chain.proceed());
+                                ? blockedInsertUri() : chain.proceed());
                         break;
                     case "update":
                     case "delete":
@@ -467,19 +466,24 @@ final class Hooks {
                                 ? 0 : chain.proceed());
                         break;
                     case "openInputStream":
-                        hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? new ByteArrayInputStream(new byte[0]) : chain.proceed());
-                        break;
                     case "openOutputStream":
-                        hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? new ByteArrayOutputStream() : chain.proceed());
+                        // H3 修复：之前返回空流，BitmapFactory.decodeStream 得到 null 后
+                        // 调用方 .getWidth() NPE。改为与 openFileDescriptor 一致抛
+                        // FileNotFoundException，应用自带的 IO 错误分支能接住。
+                        hook(m, chain -> {
+                            Uri u = (Uri) chain.getArg(0);
+                            if (blocked(u, authorities)) {
+                                throw new java.io.FileNotFoundException("blocked by MBPU: " + u);
+                            }
+                            return chain.proceed();
+                        });
                         break;
                     case "openFileDescriptor":
                     case "openAssetFileDescriptor":
                     case "openTypedAssetFileDescriptor":
                     case "openTypedAssetFile":
                         hook(m, chain -> {
-                            if (blockedFile((Uri) chain.getArg(0), authorities)) return null;
+                            failIfBlocked((Uri) chain.getArg(0), authorities);
                             return chain.proceed();
                         }, true);
                         break;
@@ -495,7 +499,7 @@ final class Hooks {
                         break;
                     case "openFile":
                         hook(m, chain -> {
-                            if (blockedFile((Uri) chain.getArg(0), authorities)) return null;
+                            failIfBlocked((Uri) chain.getArg(0), authorities);
                             return chain.proceed();
                         }, true);
                         break;
@@ -570,6 +574,19 @@ final class Hooks {
             }
         }
         if (!any) return null;
+        // M4 修复：原来是「命中任一条就整批伪成功」，混合批次里非屏蔽 provider 的
+        // 写入被静默丢弃（数据丢失）。改为：全部命中才伪成功（无数据可丢），
+        // 混合批次抛 OperationApplicationException 让应用走失败回滚路径。
+        int blocked = 0;
+        for (Object op : ops) {
+            if (!(op instanceof android.content.ContentProviderOperation)) continue;
+            android.net.Uri uri = ((android.content.ContentProviderOperation) op).getUri();
+            if (uri != null && blocked(uri, authorities)) blocked++;
+        }
+        if (blocked < ops.size()) {
+            throw new android.content.OperationApplicationException(
+                    "blocked by MBPU: mixed batch has non-blocked ops", 0);
+        }
         return emptyBatchResult(args);
     }
 
@@ -587,7 +604,7 @@ final class Hooks {
             if (m.getName().equals("call") && pt[0] == String.class) {
                 if (pt.length >= 4 && pt[1] == String.class && pt[2] == String.class) {
                     hook(m, chain -> blockedAuthority((String) chain.getArg(0), authorities)
-                            ? null : chain.proceed());
+                            ? new android.os.Bundle() : chain.proceed());
                 }
                 continue;
             }
@@ -620,8 +637,9 @@ final class Hooks {
                             ? emptyCursor(chain.getArgs()) : chain.proceed());
                     break;
                 case "insert":
+                    // H2 修复（第二处）：同上，返回 URI 形态避免 NPE。
                     hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                            ? null : chain.proceed());
+                            ? blockedInsertUri() : chain.proceed());
                     break;
                 case "update":
                 case "delete":
@@ -634,7 +652,7 @@ final class Hooks {
                 case "openTypedAssetFile":
                 case "openTypedAssetFileDescriptor":
                     hook(m, chain -> {
-                        if (blockedFile((Uri) chain.getArg(0), authorities)) return null;
+                        failIfBlocked((Uri) chain.getArg(0), authorities);
                         return chain.proceed();
                     }, true);
                     break;
@@ -665,16 +683,47 @@ final class Hooks {
         for (Method m : lm.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers())) continue;
             String n = m.getName();
-            if (n.equals("getLastKnownLocation") || n.equals("getLastLocation")) {
+            if (n.equals("getLastKnownLocation")) {
                 if (m.getReturnType() == Location.class) {
                     hook(m, chain -> null);
                 }
             } else if (n.equals("requestLocationUpdates") || n.equals("requestSingleUpdate")
                     || n.equals("getCurrentLocation")) {
                 hook(m, chain -> null);
+            } else if (n.equals("isProviderEnabled")) {
+                // H4 补充：让应用判断「有无可用定位 provider」时得到「无」。
+                // 注意：GMS FusedLocationProviderClient 走 Binder 直连 GMS Core，
+                // 不在本进程内，本模块不拦截——这是有意的行为边界。
+                if (m.getReturnType() == boolean.class) hook(m, chain -> false);
+            } else if (n.equals("getProviders")) {
+                if (List.class.isAssignableFrom(m.getReturnType())) {
+                    hook(m, chain -> new java.util.ArrayList<String>());
+                }
             }
         }
         log("location hooks installed");
+    }
+
+    // ------------------------------------------------------------------- sms
+
+    /**
+     * H5 修复：SMS 类别把 SEND_SMS 伪装成已授予（installPermission），
+     * 但原来没拦发送路径——应用自检通过后调 SmsManager.sendTextMessage，
+     * 真持权限时短信真的发出去（扣费/隐私），无权限时 system_server 抛 SecurityException 崩宿主。
+     * 这里把发送类方法全部 no-op，语义「已授权但发送失败」。
+     */
+    private void installSmsSend() {
+        Class<?> sms = load("android.telephony.SmsManager");
+        if (sms == null) return;
+        for (Method m : sms.getDeclaredMethods()) {
+            if (!Modifier.isPublic(m.getModifiers())) continue;
+            String n = m.getName();
+            if (n.equals("sendTextMessage") || n.equals("sendMultipartTextMessage")
+                    || n.equals("sendTextMessageWithoutPersisting") || n.equals("sendDataMessage")) {
+                hook(m, chain -> null);   // no-op：不抛异常，避免崩宿主
+            }
+        }
+        log("sms send hooks installed (no-op)");
     }
 
     // -------------------------------------------------------------- clipboard
@@ -741,9 +790,42 @@ final class Hooks {
             boolean querying = n.equals("queryIntentActivities") || n.equals("queryIntentServices")
                     || n.equals("queryIntentReceivers") || n.equals("queryIntentContentProviders")
                     || n.equals("queryBroadcastReceivers");
+            // M2 修复：原来只拦列举和 Intent 查询，逐包查询（getPackageInfo/getApplicationInfo）
+            // 不拦——应用靠 NameNotFoundException 判断是否安装，能完全枚举。补上。
+            boolean perPkg = n.equals("getPackageInfo") || n.equals("getApplicationInfo");
+            // M6 修复：checkPermission 也在 ApplicationPackageManager 上有具体实现
+            // （不是抽象 PackageManager），可 hook。原来只遍历了 ContextImpl，
+            // 用 pm.checkPermission 自检的应用读到 DENIED，走「无权限」分支。
+            boolean permCheck = n.equals("checkPermission") && m.getReturnType() == int.class;
+            if (perPkg) {
+                hook(m, chain -> {
+                    Object arg0 = chain.getArgs().isEmpty() ? null : chain.getArg(0);
+                    String target = null;
+                    if (arg0 instanceof String) target = (String) arg0;
+                    else if (arg0 instanceof android.content.pm.VersionedPackage) {
+                        target = ((android.content.pm.VersionedPackage) arg0).getPackageName();
+                    }
+                    // 自身包名放行，其余一律「未安装」（应用已有处理路径）
+                    if (target != null && !target.equals(pkg)) {
+                        throw new android.content.pm.PackageManager.NameNotFoundException(target);
+                    }
+                    return chain.proceed();
+                }, true);
+                continue;
+            }
+            if (permCheck) {
+                hook(m, chain -> {
+                    String targetPkg = chain.getArgs().size() > 1 ? (String) chain.getArg(1) : null;
+                    if (targetPkg != null && targetPkg.equals(pkg)) {
+                        return android.content.pm.PackageManager.PERMISSION_GRANTED;
+                    }
+                    return chain.proceed();
+                }, true);
+                continue;
+            }
             if (!listing && !querying) continue;
             if (!List.class.isAssignableFrom(m.getReturnType())) continue;
-            hook(m, chain -> Collections.emptyList());
+            hook(m, chain -> new java.util.ArrayList<>());
         }
         log("installed-app hooks installed");
     }
@@ -766,10 +848,20 @@ final class Hooks {
                 // 原来一律返回 Account[]，hasFeatures()/getAuthToken() 会在目标应用里
                 // 抛 ClassCastException，是模块直接制造的崩溃。
                 if (m.getName().equals("getAccountsByTypeAndFeatures")) {
-                    hook(m, chain -> emptyAccountFuture());
+                    // M5 修复：原实现只返回 Future 不投递 callback，用 callback 风格
+                    // 调用的应用会永久卡在 loading。补投递（参数顺序：type, features, callback, handler）。
+                    hook(m, chain -> {
+                        Object f = emptyAccountFuture();
+                        deliverAccountCallback(chain, f);
+                        return f;
+                    });
                 } else if (m.getName().equals("hasFeatures")) {
                     // 没有任何账户 => 不存在任何 feature。
-                    hook(m, chain -> completedFuture(Boolean.FALSE));
+                    hook(m, chain -> {
+                        Object f = completedFuture(Boolean.FALSE);
+                        deliverAccountCallback(chain, f);
+                        return f;
+                    });
                 } else {
                     // 其余（getAuthToken/addAccount/...）不伪装：交给系统走真实失败路径，
                     // 比返回错误类型的 Future 安全得多。
@@ -777,10 +869,39 @@ final class Hooks {
                 }
             } else if (java.util.Map.class.isAssignableFrom(m.getReturnType())
                     && m.getName().contains("Visibility")) {
-                hook(m, chain -> Collections.emptyMap());
+                hook(m, chain -> new java.util.HashMap<>());
             }
         }
         log("account hooks installed");
+    }
+
+    /**
+     * M5：把构造好的 Future 通过 AccountManagerCallback 投递出去。
+     * 参数顺序（AccountManager.hasFeatures / getAccountsByTypeAndFeatures）：
+     *   arg0=account|type, arg1=features, arg2=callback, arg3=handler
+     * callback 或 handler 为 null 时退化为当前线程直接回调。
+     */
+    private static void deliverAccountCallback(XposedInterface.Chain chain, Object future) {
+        try {
+            java.util.List<Object> args = chain.getArgs();
+            if (args.size() < 3) return;
+            Object cb = args.get(2);
+            Object handler = args.size() > 3 ? args.get(3) : null;
+            if (cb == null) return;
+            final android.accounts.AccountManagerCallback<Object> callback =
+                    (android.accounts.AccountManagerCallback<Object>) cb;
+            @SuppressWarnings("unchecked")
+            final android.accounts.AccountManagerFuture<Object> f =
+                    (android.accounts.AccountManagerFuture<Object>) future;
+            Runnable r = () -> callback.run(f);
+            if (handler instanceof android.os.Handler) {
+                ((android.os.Handler) handler).post(r);
+            } else {
+                r.run();
+            }
+        } catch (Throwable ignored) {
+            // 投递失败不影响 Future 本身，调用方仍可走 getResult()。
+        }
     }
 
     /** 已完成的泛型 Future：用于 hasFeatures 这类返回标量的方法。 */
@@ -862,7 +983,10 @@ final class Hooks {
                 });
             } else if (pt.length >= 4 && pt[0] == float[].class) {
                 hook(m, chain -> {
-                    Object error = validRead(chain, 4);
+                    // L4 修复：read(float[],int,int,int) 参数个数是 4，
+                    // validRead 的 modeIndex 用 4 时 `size > modeIndex` 恒 false，mode 校验被跳过。
+                    // 与其他分支对齐，传 3。
+                    Object error = validRead(chain, 3);
                     if (error != null) return error;
                     float[] buf = (float[]) chain.getArg(0);
                     int off = ((Number) chain.getArg(1)).intValue();
@@ -886,7 +1010,15 @@ final class Hooks {
                             == android.media.AudioFormat.ENCODING_PCM_8BIT ? (byte) 0x80 : 0;
                     int start = buf.position();
                     int end = start + size;
-                    for (int i = start; i < end; i++) buf.put(i, silence);
+                    // L5 修复：原逐字节 put 在高频音频回调下开销可观，改为 bulk 填充。
+                    if (buf.hasArray()) {
+                        Arrays.fill(buf.array(), buf.arrayOffset() + start, buf.arrayOffset() + end, silence);
+                    } else {
+                        byte[] tmp = new byte[size];
+                        Arrays.fill(tmp, silence);
+                        buf.position(start);
+                        buf.put(tmp);
+                    }
                     // 平台成功读取后会推进 position；不推进的话调用方下一次 read
                     // 还会覆盖同一段缓冲，依赖 position/flip 的编码器会拿到错误长度。
                     buf.position(end);

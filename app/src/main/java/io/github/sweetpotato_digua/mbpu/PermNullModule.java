@@ -1,7 +1,6 @@
 package io.github.sweetpotato_digua.mbpu;
 
 import android.content.SharedPreferences;
-import android.os.Build;
 import android.util.Log;
 
 import java.util.Set;
@@ -21,32 +20,19 @@ public class PermNullModule extends XposedModule {
 
     private static final String TAG = "PermNull";
 
-    /** 同进程可能加载多个包/实际 ClassLoader，按二者身份去重，不能只用进程级 Boolean。 */
-    private final Set<HookTarget> installed = ConcurrentHashMap.newKeySet();
+    /**
+     * 已装 hook 的包名（M15/L19：之前按 (pkg, loader 身份) 去重，若两阶段回调给不同 loader
+     * 会重复安装；现只按包名去重，loader 只用来定位 hook 目标。
+     * 用 Set<String> 避免持有目标 ClassLoader 引用，防止其及其加载的类无法回收）。
+     */
+    private final Set<String> installed = ConcurrentHashMap.newKeySet();
 
-    /** 正在等待签名校验结论的包名，避免多次回调重复起线程。 */
-    private final Set<String> sigRetryPending = ConcurrentHashMap.newKeySet();
-
-    private static final class HookTarget {
-        final String pkg;
-        final ClassLoader loader;
-
-        HookTarget(String pkg, ClassLoader loader) {
-            this.pkg = pkg;
-            this.loader = loader;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return other instanceof HookTarget && pkg.equals(((HookTarget) other).pkg)
-                    && loader == ((HookTarget) other).loader;
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * pkg.hashCode() + System.identityHashCode(loader);
-        }
-    }
+    /**
+     * 正在等待签名校验结论的包名 → 该包最近一次回调给出的 ClassLoader。
+     * M14：按包名去重但保存最新 cl（put 覆盖旧值），重试线程取最新 cl，避免吞掉
+     * onPackageReady 后到的新 ClassLoader。
+     */
+    private final ConcurrentHashMap<String, ClassLoader> sigRetryPending = new ConcurrentHashMap<>();
 
     /** 当前进程名；onModuleLoaded 时保存，install 时用作 HOOKSTAT 标识。 */
     private volatile String currentProcessName = "?";
@@ -57,17 +43,17 @@ public class PermNullModule extends XposedModule {
             currentProcessName = param.getProcessName();
             log(Log.INFO, TAG, "loaded in " + currentProcessName);
         } catch (Throwable ignored) {
+            // L20：取进程名失败时不要留 "?"，install 里会用 pkg 兜底。
         }
     }
 
     @Override
     public void onPackageLoaded(XposedModuleInterface.PackageLoadedParam param) {
+        // L17：minSdk=29(Q)，原 SDK_INT >= Q 分支恒真，删掉只留 try/catch 取 cl。
         ClassLoader cl = null;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                cl = param.getDefaultClassLoader();
-            } catch (Throwable ignored) {
-            }
+        try {
+            cl = param.getDefaultClassLoader();
+        } catch (Throwable ignored) {
         }
         install("onPackageLoaded", param.getPackageName(), cl);
     }
@@ -78,11 +64,15 @@ public class PermNullModule extends XposedModule {
     }
 
     private void install(String phase, String pkg, ClassLoader cl) {
-        if ("io.github.sweetpotato_digua.mbpu".equals(pkg)) return;
+        // L18：自身包名不硬编码，跟 applicationId 保持一致（包名迁移时不用再改这里）。
+        if (BuildConfig.APPLICATION_ID.equals(pkg)) return;
         if (cl == null) {
             safeLog(Log.WARN, phase + " " + pkg + " classLoader=null");
             return;
         }
+        // L20：currentProcessName 取不到时用 pkg 兜底，HOOKSTAT 标识不至于是 "?"。
+        String processName = currentProcessName;
+        if ("?".equals(processName)) processName = pkg;
 
         // 装 hook 之前先确认承载本模块代码的 APK 没被换签名重打包。
         // 不匹配就静默跳过：重打包产物能装能开界面，但对任何应用都不生效。
@@ -105,43 +95,49 @@ public class PermNullModule extends XposedModule {
             // 只读当前包，避免为诊断日志复制所有配置。
             mask = Config.parse(spec);
         } catch (Throwable t) {
-            safeLog(Log.WARN, "read config failed for " + pkg + ": " + t);
+            // H11：区分「配置读不到」和「未启用」——读不到（remote prefs 不可用、回调早于
+            // attach、类型异常）走延后重试，不能像 mask==0 那样永久放弃该包。
+            safeLog(Log.WARN, "read config failed for " + pkg + ": " + t + ", will retry");
+            scheduleSigRetry(phase, pkg, cl);
             return;
         }
 
-        if (mask == 0) return;
-        HookTarget target = new HookTarget(pkg, cl);
-        if (!installed.add(target)) {
+        // H11：mask==0 = 该包未启用（配置存在但为空/0），与上面的「读不到」明确区分。
+        if (mask == 0) {
+            safeLog(Log.INFO, "mask==0 for " + pkg + " (not enabled)");
+            return;
+        }
+        // M15/L19：只按包名去重，loader 仅用于定位 hook 目标，不进去重键。
+        if (!installed.add(pkg)) {
             safeLog(Log.INFO, phase + " " + pkg + " already installed, skip");
             return;
         }
 
+        Hooks hooks = null;
         try {
-            Hooks hooks = new Hooks(this, pkg, mask, cl);
+            hooks = new Hooks(this, pkg, mask, cl);
             hooks.install();
             // 统计通过 module.log 输出结构化标记，由诊断页从 LSPosed 日志解析。
             // 目标进程以自身 UID 运行，无法写入模块 app 的私有目录，因此文件方案不可行。
             // 用实际进程名（pkg 或 pkg:remote）而不是包名：
             // 包名会导致主/子进程写同一个 HOOKSTAT 键互相覆盖，
             // 子进程统计永远丢失，诊断页读不到子进程数据。
-            reportStatus(currentProcessName, hooks.okCount(), hooks.okCount() + hooks.failCount());
+            reportStatus(processName, hooks.okCount(), hooks.okCount() + hooks.failCount());
             safeLog(Log.INFO, pkg + " active, mask=" + Config.serialize(mask) + " via " + phase);
         } catch (Throwable t) {
-            installed.remove(target);
+            // M13：安装失败时的去重标记取舍——
+            // - 能拿到 Hooks 实例且一个 hook 都没装上（okCount==0）：移除标记，允许下次回调重试；
+            // - 异常发生在 Hooks 构造阶段（hooks 仍为 null），无法得知装没装上：
+            //   保守保留标记不重试，避免「已装一半 + 下次重复安装」的双倍 hook。
+            if (hooks != null && hooks.okCount() == 0) {
+                installed.remove(pkg);
+            }
             safeLog(Log.ERROR, "install failed for " + pkg + ": " + t);
         }
     }
 
-    private String hookStatus(int total, int ok) {
-        return total + "/" + ok;
-    }
-
     /**
-     * 输出可被诊断页解析的统计行：HOOKSTAT|进程名|成功数|总数。
-     * 走 module.log，随 LSPosed 写入 modules_*.log，是当前唯一可靠的跨进程通道。
-     */
-    /**
-     * 签名校验拿不到结论时的后台重试。
+     * 签名校验拿不到结论时的后台重试（H11 复用：配置读取失败时也走这里延后重试）。
      *
      * <p>LSPosed 只在 onPackageLoaded / onPackageReady 两个时机回调，而这两个
      * 时机都可能早于 Application 创建，此时取不到 PackageManager。实测有的应用
@@ -149,10 +145,14 @@ public class PermNullModule extends XposedModule {
      * 每隔 400ms 重试一次，最多 5 次（约 2 秒）后放弃。
      *
      * <p>放弃时只记日志、不装 hook：宁可少装，也不能给重打包产物放行。
-     * 同一进程内按包名去重，避免多次回调堆起一堆线程。
+     * M14：同一进程内按包名去重但保存最新 ClassLoader（put 覆盖旧值），
+     * 重试线程取最新 cl，避免吞掉 onPackageReady 后到的新 ClassLoader。
      */
     private void scheduleSigRetry(String phase, String pkg, ClassLoader cl) {
-        if (!sigRetryPending.add(pkg)) {
+        ClassLoader prev = sigRetryPending.putIfAbsent(pkg, cl);
+        if (prev != null) {
+            // 已有重试线程在跑：只把 cl 刷成最新的，不重复起线程。
+            sigRetryPending.put(pkg, cl);
             return;
         }
         Thread t = new Thread(() -> {
@@ -164,12 +164,15 @@ public class PermNullModule extends XposedModule {
                         Thread.currentThread().interrupt();
                         return;
                     }
+                    // M14：每次重试都取最新的 cl（可能已被后续回调刷新）。
+                    ClassLoader latest = sigRetryPending.get(pkg);
+                    if (latest == null) latest = cl;
                     Boolean ok = ModuleIntegrity.isTrusted(this);
                     if (ok == null) {
                         continue;
                     }
                     if (ok) {
-                        install(phase + "/retry" + i, pkg, cl);
+                        install(phase + "/retry" + i, pkg, latest);
                     } else {
                         safeLog(Log.ERROR, "module signature mismatch, refuse to hook " + pkg);
                     }

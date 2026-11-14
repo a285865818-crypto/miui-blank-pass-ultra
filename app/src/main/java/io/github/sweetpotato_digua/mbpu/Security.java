@@ -12,6 +12,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 模块界面进程的安全校验层。
@@ -48,11 +51,35 @@ public final class Security {
     /** 反注入检测：返回可疑标记位 */
     private static native int nativeIntegrity();
 
+    /* ===== 签名 hash 归一化（与 ModuleIntegrity 保持同一规则） ===== */
+
+    /**
+     * 归一化签名证书 SHA-256：去空白、去冒号、转小写。
+     *
+     * <p>keytool 输出是「大写 + 冒号分隔」的 96 字符，直接拿来比对必然失败，
+     * 所以统一在 Java 侧归一化后才与 {@link #computeSigHash} 的产物比对，
+     * native 层只做防御性的 {@code strncmp}。
+     *
+     * @return 64 位小写 hex；长度不符（含 {@code null}）返回 {@code ""}，视为未配置
+     */
+    static String normalizeHex(String s) {
+        if (s == null) return "";
+        String t = s.trim().replace(":", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
+        return t.length() == 64 ? t : "";
+    }
+
     /* ===== Java 层签名 hash 计算 ===== */
 
     /**
      * 计算当前 APK 签名证书的 SHA-256（小写十六进制）。
-     * 不匹配时返回空字符串。
+     *
+     * <p>三态返回：
+     * <ul>
+     *   <li>{@code null} = 读取失败（PM 异常、signingInfo 为 null、sigs 为空），
+     *       调用方走降级路径（只记日志），不能据此杀进程；</li>
+     *   <li>{@code ""} = 确认校验失败（签名与期望值不匹配）；</li>
+     *   <li>64 位 hex = 计算成功。</li>
+     * </ul>
      */
     private static String computeSigHash(Context context) {
         try {
@@ -73,17 +100,29 @@ public final class Security {
                 sigs = legacy;
             }
 
-            if (sigs == null || sigs.length == 0) return "";
+            if (sigs == null || sigs.length == 0) return null;   // 读不到
             MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(sigs[0].toByteArray());
-            StringBuilder sb = new StringBuilder(64);
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
+            // 多签名 APK 下 signatures 数组顺序不保证，收集全部 hash 排序后取最小，结果才稳定。
+            List<String> hashes = new ArrayList<>(sigs.length);
+            for (Signature s : sigs) {
+                hashes.add(sha256Hex(md, s.toByteArray()));
             }
-            return sb.toString();
+            Collections.sort(hashes);
+            return hashes.get(0);
         } catch (Throwable t) {
-            return "";
+            android.util.Log.w("MBPU_SEC", "computeSigHash failed: " + t);
+            return null;   // 读不到，不杀
         }
+    }
+
+    /** 证书 DER 的 SHA-256，输出 64 位小写 hex。 */
+    private static String sha256Hex(MessageDigest md, byte[] der) {
+        byte[] hash = md.digest(der);
+        StringBuilder sb = new StringBuilder(64);
+        for (byte b : hash) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     /* ===== 对外入口 ===== */
@@ -110,22 +149,33 @@ public final class Security {
         // 2. 签名校验：这是唯一会 abort 的检查（防重打包）。
         //    期望值来自 BuildConfig.EXPECTED_SIG_SHA256（local.properties 注入，不入库）。
         //    没配置就跳过——开源版本让任何人克隆后都能直接构建运行。
-        String expected = BuildConfig.EXPECTED_SIG_SHA256;
-        if (expected == null) expected = "";
+        //    期望值与实际值都过 normalizeHex，规则与 ModuleIntegrity、native 层一致（H10）。
+        String expected = normalizeHex(BuildConfig.EXPECTED_SIG_SHA256);
         if (expected.isEmpty()) {
-            android.util.Log.w("MBPU_SEC", "EXPECTED_SIG_SHA256 not configured, signature check skipped");
+            android.util.Log.w("MBPU_SEC", "EXPECTED_SIG_SHA256 not configured or invalid, signature check skipped");
         } else {
             String sigHash = computeSigHash(context);
-            if (sigHash.isEmpty() || !nativeCheckSig(expected, sigHash)) {
-                Process.killProcess(Process.myPid());
-                System.exit(1);
-                return;
+            if (sigHash == null) {
+                // PM 抖动 / split 未就绪 / 签名读不到：降级为只记日志，不能当篡改处理（H9）。
+                android.util.Log.w("MBPU_SEC", "sig hash unavailable, skip check (degraded)");
+            } else {
+                // 归一化后若为空说明 computeSigHash 产物异常；但 verify 的入口值
+                // normalizeHex 已保证非空才进来，这里只可能是畸形值，按不匹配杀进程。
+                sigHash = normalizeHex(sigHash);   // 已是小写 64 hex，双保险
+                if (sigHash.isEmpty() || !nativeCheckSig(expected, sigHash)) {
+                    android.util.Log.e("MBPU_SEC", "signature mismatch, killing process; got="
+                            + (sigHash.isEmpty() ? "<malformed>" : sigHash.substring(0, 8)));
+                    Process.killProcess(Process.myPid());
+                    System.exit(1);
+                }
             }
         }
 
-        // 3. 反注入检测：只记录
+        // 3. 反注入检测：只记录。
+        //    nativeIntegrity 的 -1 表示检测本身失败（如 maps 读不开），
+        //    不是「可疑」，只有 > 0 的位掩码才说明检出（L25）。
         int suspicious = nativeIntegrity();
-        if (suspicious != 0) {
+        if (suspicious > 0) {
             android.util.Log.w("MBPU_SEC", "suspicious so detected: " + suspicious);
         }
     }

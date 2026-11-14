@@ -2,6 +2,7 @@ package io.github.sweetpotato_digua.mbpu;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -17,7 +18,11 @@ final class RootShell {
 
     private static final long TIMEOUT_SECONDS = 15;
     private static final int MAX_OUTPUT_CHARS = 64 * 1024;
-    private static final ExecutorService OUTPUT_READER = Executors.newCachedThreadPool(r -> {
+    /** force-stop 分批大小：每批一次 exec，控制在单次超时预算内。 */
+    private static final int BATCH_SIZE = 5;
+    // 固定 4 个读取线程：cachedThreadPool 无界，每个 exec 占一个阻塞读线程，
+    // 并发 su 超时会把线程数堆到不可控；4 足够覆盖同步批量场景。
+    private static final ExecutorService OUTPUT_READER = Executors.newFixedThreadPool(4, r -> {
         Thread thread = new Thread(r, "MBPU-root-output");
         thread.setDaemon(true);
         return thread;
@@ -29,10 +34,17 @@ final class RootShell {
     static final class Result {
         final int exitCode;
         final String output;
+        /** 输出是否被 MAX_OUTPUT_CHARS 截断；截断的名单类输出不能当完整结果用。 */
+        final boolean truncated;
 
         Result(int exitCode, String output) {
+            this(exitCode, output, false);
+        }
+
+        Result(int exitCode, String output, boolean truncated) {
             this.exitCode = exitCode;
             this.output = output;
+            this.truncated = truncated;
         }
 
         boolean ok() {
@@ -51,10 +63,11 @@ final class RootShell {
      * 超长输出（比如一次 dumpsys）时，字符上限根本拦不住 OOM。这里按字符流读取，
      * 超出上限后继续丢弃剩余字节，但仍然把流读完，避免对端因管道写满而阻塞。
      */
-    private static String readOutput(Process process) throws Exception {
+    private static String[] readOutput(Process process) throws Exception {
         StringBuilder out = new StringBuilder();
         boolean truncated = false;
-        try (java.io.Reader reader = new InputStreamReader(process.getInputStream())) {
+        try (java.io.Reader reader = new InputStreamReader(
+                process.getInputStream(), StandardCharsets.UTF_8)) {
             char[] buf = new char[4096];
             int n;
             while ((n = reader.read(buf)) != -1) {
@@ -67,7 +80,8 @@ final class RootShell {
             }
         }
         if (truncated) out.append("[output truncated]");
-        return out.toString().trim();
+        // 返回 {输出, 截断标志}，由 exec 装进 Result。
+        return new String[]{out.toString().trim(), Boolean.toString(truncated)};
     }
 
     /**
@@ -80,6 +94,9 @@ final class RootShell {
         // Android 的 java.lang.Process 没有 ProcessHandle（API 26+ 的 toHandle 在
         // Android 运行时不存在）。退而求其次：destroyForcibly + 关闭三个流，让读取线程
         // 拿到 EOF 退出，再显式 waitFor 回收。无法保证子进程全死，但不会泄漏线程。
+        // 注意：uid=0 的 su 进程无法从 app 侧（uid 10xxx）kill，kill(2) 只看 uid，
+        // destroyForcibly 对它必然 EPERM。超时残留的 root 进程只能靠脚本内自限时
+        // （见 forceStop 的 timeout 包裹）控制，这里不改 uid 逻辑。
         process.destroyForcibly();
         closeQuietly(process.getOutputStream());
         closeQuietly(process.getInputStream());
@@ -99,19 +116,35 @@ final class RootShell {
         }
     }
 
-    /** 合并输出，限制等待时间与输出大小，防止 su/am 卡死悬挂调用协程。 */
+    /**
+     * POSIX shell 单参数引用：把任意字符串安全地包成一个字面量。
+     * 当前 exec 的调用点脚本全为常量、包名已过 validPackage 白名单，暂无调用方；
+     * 保留给未来拼接动态参数的场景，避免手写转义出注入。
+     */
+    static String shellQuote(String s) {
+        if (s == null) return "''";
+        return "'" + s.replace("'", "'\\'\\''") + "'";
+    }
+
+    /**
+     * 合并输出，限制等待时间与输出大小，防止 su/am 卡死悬挂调用协程。
+     * <p>
+     * 注意：这是裸脚本 API，script 原样交给 su -c 执行，调用方必须自己保证
+     * 参数已正确转义（建议用 {@link #shellQuote}），或只传入常量脚本。
+     */
     static Result exec(String script) {
         if (script == null || script.trim().isEmpty()) return new Result(-1, "empty command");
         Process process = null;
-        Future<String> output = null;
+        Future<String[]> output = null;
         try {
             process = new ProcessBuilder("su", "-c", script).redirectErrorStream(true).start();
             Process running = process;
-            output = OUTPUT_READER.submit((Callable<String>) () -> readOutput(running));
+            output = OUTPUT_READER.submit((Callable<String[]>) () -> readOutput(running));
             if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 return new Result(124, "command timed out");
             }
-            return new Result(process.exitValue(), output.get(2, TimeUnit.SECONDS));
+            String[] read = output.get(2, TimeUnit.SECONDS);
+            return new Result(process.exitValue(), read[0], Boolean.parseBoolean(read[1]));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new Result(-1, "interrupted");
@@ -126,22 +159,43 @@ final class RootShell {
     }
 
     static boolean available() {
-        return exec("id -u").output.equals("0");
+        Result r = exec("id -u 2>/dev/null");
+        if (!r.ok()) return false;
+        String[] lines = r.output.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String s = lines[i].trim();
+            if (!s.isEmpty()) return "0".equals(s);
+        }
+        return false;
     }
 
-    /** 单条命令失败不会被最后一条成功覆盖；任何失败均使批量结果失败。 */
+    /**
+     * 单条命令失败不会被最后一条成功覆盖；任何失败均使批量结果失败。
+     * <p>
+     * 每条 am force-stop 用 timeout 5 包裹（toybox 自带 timeout）：app 侧杀不掉
+     * uid=0 的 su 进程树，只能靠脚本内自限时兜住 am 卡死。分批执行（每批最多
+     * {@link #BATCH_SIZE} 个包），避免整批共用 exec 的 15s 预算，包多时半途超时。
+     */
     static Result forceStop(Set<String> packages) {
         if (packages.isEmpty()) return new Result(0, "");
-        StringBuilder script = new StringBuilder("failed=0\n");
-        int valid = 0;
+        java.util.List<String> valid = new java.util.ArrayList<>();
         for (String pkg : packages) {
-            if (!validPackage(pkg)) continue;
-            script.append("am force-stop ").append(pkg).append(" || failed=1\n");
-            valid++;
+            if (validPackage(pkg)) valid.add(pkg);
         }
-        if (valid == 0) return new Result(-1, "no valid package");
-        script.append("exit $failed");
-        return exec(script.toString());
+        if (valid.isEmpty()) return new Result(-1, "no valid package");
+        StringBuilder out = new StringBuilder();
+        boolean failed = false;
+        for (int from = 0; from < valid.size(); from += BATCH_SIZE) {
+            StringBuilder script = new StringBuilder("failed=0\n");
+            for (String pkg : valid.subList(from, Math.min(from + BATCH_SIZE, valid.size()))) {
+                script.append("timeout 5 am force-stop ").append(pkg).append(" || failed=1\n");
+            }
+            script.append("exit $failed");
+            Result r = exec(script.toString());
+            out.append(r.output);
+            if (!r.ok()) failed = true;
+        }
+        return new Result(failed ? 1 : 0, out.toString());
     }
 
     static boolean isRunning(String pkg) {
@@ -158,6 +212,7 @@ final class RootShell {
         if (valid.isEmpty()) return new LinkedHashSet<>();
         Result result = exec("ps -A -o NAME=");
         if (!result.ok()) throw new IllegalStateException("ps failed: " + result.output);
+        if (result.truncated) throw new IllegalStateException("ps output truncated");
 
         Set<String> running = new LinkedHashSet<>();
         for (String line : result.output.split("\\n")) {

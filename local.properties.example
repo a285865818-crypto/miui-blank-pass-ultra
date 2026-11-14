@@ -10,9 +10,11 @@ SIGN_STORE_PASSWORD=你的 storePassword
 SIGN_KEY_ALIAS=你的 keyAlias
 SIGN_KEY_PASSWORD=你的 keyPassword
 
-# ---- 可选：期望的 APK 签名证书 SHA-256（小写 hex）----
+# ---- 可选：期望的 APK 签名证书 SHA-256（小写 hex，无冒号，共 64 字符）----
 # 填了会在两处校验：模块界面进程不一致直接结束进程；目标应用进程
 # 不一致则不安装任何 hook（重打包产物因此变成空壳）。
 # 留空或删掉这一行 = 不校验，方便自己编译调试。
-# 取值：keytool -list -v -keystore <你的.keystore> -alias <别名> | grep SHA256
+# 取值要去掉冒号、转小写，例如：
+#   keytool -list -v -keystore <你的.keystore> -alias <别名> | grep SHA256 | sed 's/.*: //;s/://g' | tr 'A-Z' 'a-z'
+# （keytool 原始输出是大写 + 冒号分隔的 96 字符，直接粘贴会校验失败。）
 # EXPECTED_SIG_SHA256=

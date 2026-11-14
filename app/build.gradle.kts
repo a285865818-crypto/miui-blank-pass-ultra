@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.sweetpotato_digua.mbpu"
         minSdk = 29
         targetSdk = 37
-        versionCode = 8
-        versionName = "1.3.1"
+        versionCode = 9
+        versionName = "1.3.2"
         // 期望的签名证书 SHA-256（小写 hex）。留空 = 不校验签名，方便他人构建。
         buildConfigField("String", "EXPECTED_SIG_SHA256", "\"$expectedSigHash\"")
         ndk {

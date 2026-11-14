@@ -79,21 +79,20 @@ public final class Store {
                 try {
                     syncRemote(prefs);
                 } finally {
-                    // 关键：先消费掉本次请求，再决定是否还有新请求要跑。
-                    // 旧写法只在有下一轮时才清 syncRequested，导致每轮结束都又把它
-                    // 置回 true，同步任务永久自调度、不停打 LSPosed daemon IPC。
+                    // 关键：原子地「读走」本次请求，再决定是否还有新请求要跑。
+                    // 同步执行期间 scheduleSync 置起的 syncRequested 只能在这里被消费，
+                    // 绝不能无条件清零——那会把同步期间到达的修改一起吞掉（开关改了不生效）。
+                    boolean needAgain;
                     SharedPreferences next;
                     synchronized (lock) {
                         syncScheduled = false;
+                        needAgain = syncRequested;
                         syncRequested = false;
                         next = remote;
                     }
-                    if (next != null) {
-                        synchronized (lock) {
-                            if (!syncRequested) next = null;
-                        }
+                    if (next != null && needAgain) {
+                        scheduleSync(next);
                     }
-                    if (next != null) scheduleSync(next);
                 }
             });
         } catch (Throwable rejected) {
@@ -108,6 +107,7 @@ public final class Store {
         Set<String> dirty;
         try {
             synchronized (lock) {
+                // 锁内只做本地读与取引用；prefs.getAll() 是跨进程 IPC，禁止持 lock 调用。
                 if (remote != prefs) return;
                 localValues = local.getAll();
                 dirty = dirtyConfigsLocked();
@@ -140,10 +140,12 @@ public final class Store {
                 // 本地新值覆盖回去（键已经不是 dirty 了，不会被重放）。
                 if (remote != prefs) return;
                 Set<String> currentDirty = dirtyConfigsLocked();
+                // local.getAll() 一次取快照，不在循环里反复全量读。
+                Map<String, ?> localNow = local.getAll();
                 for (String key : dirty) {
                     if (!currentDirty.contains(key)) continue;
                     Object before = localValues.get(key);
-                    Object now = local.getAll().get(key);
+                    Object now = localNow.get(key);
                     if (Objects.equals(before, now)) synced.add(key);
                 }
                 if (!synced.isEmpty()) {
@@ -151,7 +153,7 @@ public final class Store {
                     local.edit().putStringSet(KEY_DIRTY_CONFIG, currentDirty).apply();
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             // 保留 dirty；下次服务绑定或配置修改时重试。
         }
     }
@@ -168,7 +170,7 @@ public final class Store {
         try {
             Set<String> stored = local.getStringSet(key, null);
             return stored == null ? new HashSet<>() : new HashSet<>(stored);
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return new HashSet<>();
         }
     }
@@ -177,7 +179,7 @@ public final class Store {
         try {
             String value = local.getString(key, fallback);
             return value == null ? fallback : value;
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return fallback;
         }
     }
@@ -185,7 +187,7 @@ public final class Store {
     private boolean bool(String key, boolean fallback) {
         try {
             return local.getBoolean(key, fallback);
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return fallback;
         }
     }
@@ -194,25 +196,29 @@ public final class Store {
     public int get(String pkg) {
         String key = Config.KEY_PREFIX + pkg;
         String value;
+        Map<String, ?> localValues;
+        boolean dirty;
         synchronized (lock) {
-            Map<String, ?> localValues = local.getAll();
-            if (dirtyConfigsLocked().contains(key)) {
+            localValues = local.getAll();
+            dirty = dirtyConfigsLocked().contains(key);
+        }
+        if (dirty) {
+            Object localValue = localValues.get(key);
+            value = localValue instanceof String ? (String) localValue : null;
+        } else {
+            value = null;
+            // remote.getAll() 是跨进程 IPC，禁止持 lock 调用；出锁后只读。
+            SharedPreferences r = remote;
+            if (r != null) {
+                try {
+                    Object remoteValue = r.getAll().get(key);
+                    value = remoteValue instanceof String ? (String) remoteValue : null;
+                } catch (Throwable ignored) {
+                }
+            }
+            if (value == null) {
                 Object localValue = localValues.get(key);
                 value = localValue instanceof String ? (String) localValue : null;
-            } else {
-                SharedPreferences r = remote;
-                value = null;
-                if (r != null) {
-                    try {
-                        Object remoteValue = r.getAll().get(key);
-                        value = remoteValue instanceof String ? (String) remoteValue : null;
-                    } catch (Throwable ignored) {
-                    }
-                }
-                if (value == null) {
-                    Object localValue = localValues.get(key);
-                    value = localValue instanceof String ? (String) localValue : null;
-                }
             }
         }
         return Config.parse(value);
@@ -221,37 +227,41 @@ public final class Store {
     /** 一次快照解析所有掩码，避免列表刷新时重复复制 local/remote 全量配置。 */
     public Map<String, Integer> snapshot() {
         Map<String, Integer> out = new LinkedHashMap<>();
+        Map<String, Object> merged = new LinkedHashMap<>();
+        Map<String, ?> localValues = new LinkedHashMap<>();
+        Set<String> dirty;
+        // 锁内只做本地读与取引用；remote.getAll() 是跨进程 IPC，禁止持 lock 调用。
         synchronized (lock) {
-            Map<String, Object> merged = new LinkedHashMap<>();
             try {
-                for (Map.Entry<String, ?> entry : local.getAll().entrySet()) {
+                localValues = local.getAll();
+            } catch (Throwable ignored) {
+            }
+            dirty = dirtyConfigsLocked();
+        }
+        for (Map.Entry<String, ?> entry : localValues.entrySet()) {
+            if (isConfigKey(entry.getKey()) && entry.getValue() instanceof String) {
+                merged.put(entry.getKey(), entry.getValue());
+            }
+        }
+        SharedPreferences r = remote;
+        if (r != null) {
+            try {
+                for (Map.Entry<String, ?> entry : r.getAll().entrySet()) {
                     if (isConfigKey(entry.getKey()) && entry.getValue() instanceof String) {
                         merged.put(entry.getKey(), entry.getValue());
                     }
                 }
             } catch (Throwable ignored) {
             }
-            SharedPreferences r = remote;
-            if (r != null) {
-                try {
-                    for (Map.Entry<String, ?> entry : r.getAll().entrySet()) {
-                        if (isConfigKey(entry.getKey()) && entry.getValue() instanceof String) {
-                            merged.put(entry.getKey(), entry.getValue());
-                        }
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
-            Set<String> dirty = dirtyConfigsLocked();
-            for (String key : dirty) {
-                Object value = local.getAll().get(key);
-                if (value instanceof String) merged.put(key, value);
-                else merged.remove(key);
-            }
-            for (Map.Entry<String, Object> entry : merged.entrySet()) {
-                String pkg = entry.getKey().substring(Config.KEY_PREFIX.length());
-                if (!pkg.isEmpty()) out.put(pkg, Config.parse((String) entry.getValue()));
-            }
+        }
+        for (String key : dirty) {
+            Object value = localValues.get(key);
+            if (value instanceof String) merged.put(key, value);
+            else merged.remove(key);
+        }
+        for (Map.Entry<String, Object> entry : merged.entrySet()) {
+            String pkg = entry.getKey().substring(Config.KEY_PREFIX.length());
+            if (!pkg.isEmpty()) out.put(pkg, Config.parse((String) entry.getValue()));
         }
         return out;
     }
@@ -273,10 +283,15 @@ public final class Store {
             Set<String> dirty = dirtyConfigsLocked();
             dirty.add(key);
             SharedPreferences.Editor editor = local.edit();
-            if (value == null) editor.remove(key);
-            else editor.putString(key, value);
+            if (value == null) {
+                editor.remove(key);
+                // 删除配置时连变更时间一并清掉，该键不留永不过期的残值。
+                editor.remove(KEY_CHANGED_AT + pkg);
+            } else {
+                editor.putString(key, value);
+                editor.putLong(KEY_CHANGED_AT + pkg, System.currentTimeMillis());
+            }
             editor.putStringSet(KEY_DIRTY_CONFIG, dirty);
-            editor.putLong(KEY_CHANGED_AT + pkg, System.currentTimeMillis());
             editor.apply();
             r = remote;
         }
@@ -301,6 +316,7 @@ public final class Store {
     }
 
     public void clearPendingStop(Set<String> pkgs) {
+        if (pkgs == null || pkgs.isEmpty()) return;
         synchronized (lock) {
             Set<String> pending = pendingStops();
             if (pending.removeAll(pkgs)) {
