@@ -64,7 +64,7 @@
 
 - Android 10 及以上（minSdk 29，targetSdk 37）
 - LSPosed（modern Xposed API，`minApiVersion=101`、`targetApiVersion=102`）
-- Root 只在诊断页读取模块日志时需要，模块本体不需要
+- Root 只在「重启作用域应用」和诊断页读取模块日志时需要，模块本体不需要
 
 ## 使用
 
