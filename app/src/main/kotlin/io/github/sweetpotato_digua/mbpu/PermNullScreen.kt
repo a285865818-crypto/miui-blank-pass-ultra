@@ -44,7 +44,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import top.yukonga.miuix.kmp.squircle.squircleClip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -1883,7 +1883,9 @@ private fun AppListCard(
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
             .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(CardDefaults.CornerRadius)),
+            // squircle 连续曲率裁剪：与 Card 内部 squircleSurface 同一形状，
+            // 外轮廓不再是被普通圆弧裁掉的「假圆角」，曲率过渡更平滑。
+            .squircleClip(CardDefaults.CornerRadius),
         pressFeedbackType = PressFeedbackType.Sink,
         onClick = { if (selecting) onToggleSelected() else onOpen() },
         onLongPress = onLongPress,
