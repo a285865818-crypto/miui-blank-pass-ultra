@@ -68,7 +68,15 @@ final class ModuleIntegrity {
     private static String normalizeHex(String s) {
         if (s == null) return "";
         String t = s.trim().replace(":", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
-        return t.length() == 64 ? t : "";
+        // R10：长度 64 但含非 hex 字符（配置笔误）也必须判非法。否则原样进入比对，
+        // 运行时必然不匹配：UI 杀进程、hook 全拒载，而构建期毫无告警。
+        if (t.length() != 64) return "";
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            if (!hex) return "";
+        }
+        return t;
     }
 
     private static Boolean check(XposedInterface xposed) {
@@ -85,15 +93,23 @@ final class ModuleIntegrity {
             android.util.Log.w("MBPU_SEC", "module sig not readable yet, defer");
             return null;
         }
-        actual = normalizeHex(actual);
-        if (actual.isEmpty()) {
-            // 实际 hash 归一化后不是 64 位 hex，属于异常情况：当作读取失败延后重试，
-            // 不下「签名不符」的结论。
+        // R6：多签名时 actual 是逗号拼接的集合，任一命中即通过。
+        boolean ok = false;
+        boolean anyValid = false;
+        for (String one : actual.split(",")) {
+            String h = normalizeHex(one);
+            if (h.isEmpty()) continue;   // 畸形值不下结论
+            anyValid = true;
+            if (expected.equals(h)) {
+                ok = true;
+                break;
+            }
+        }
+        if (!anyValid) {
+            // 全部畸形：当作读取失败延后重试，不下「签名不符」的结论。
             android.util.Log.w("MBPU_SEC", "module sig malformed, defer");
             return null;
         }
-        // 两边都已归一化（小写、无冒号、64 位），直接 equals（H10）。
-        boolean ok = expected.equals(actual);
         android.util.Log.i("MBPU_SEC", "module sig verified=" + ok
                 + " prefix=" + actual.substring(0, Math.min(8, actual.length())));
         return ok;
@@ -162,7 +178,8 @@ final class ModuleIntegrity {
                 hashes.add(sb.toString());
             }
             java.util.Collections.sort(hashes);
-            return hashes.get(0);
+            // R6：与 Security.computeSigHash 一致，多签名返回完整集合（逗号拼接）。
+            return String.join(",", hashes);
         } catch (Throwable t) {
             android.util.Log.w("MBPU_SEC", "diag: throw " + t);
             return null;   // 读不到

@@ -63,12 +63,18 @@ public class PermNullModule extends XposedModule {
         install("onPackageReady", param.getPackageName(), param.getClassLoader());
     }
 
-    private void install(String phase, String pkg, ClassLoader cl) {
+    /**
+     * R8/R9：返回值三态，让重试循环能区分「成功/永久放弃」与「暂时失败要重试」。
+     * true = 已安装或明确无需安装（未启用、签名不符、自身包名、cl 为 null）；
+     * false = 暂时失败（签名读不出、配置读不到），调用方应安排重试。
+     * 回调入口忽略返回值（由内部自调度），重试线程依据返回值决定是否继续。
+     */
+    private boolean install(String phase, String pkg, ClassLoader cl) {
         // L18：自身包名不硬编码，跟 applicationId 保持一致（包名迁移时不用再改这里）。
-        if (BuildConfig.APPLICATION_ID.equals(pkg)) return;
+        if (BuildConfig.APPLICATION_ID.equals(pkg)) return true;
         if (cl == null) {
             safeLog(Log.WARN, phase + " " + pkg + " classLoader=null");
-            return;
+            return true;
         }
         // L20：currentProcessName 取不到时用 pkg 兜底，HOOKSTAT 标识不至于是 "?"。
         String processName = currentProcessName;
@@ -81,17 +87,31 @@ public class PermNullModule extends XposedModule {
             // 进程刚起步时 Application 还没创建，取不到 PackageManager。
             // 不判负也不判正，交给后台重试——那个阶段一定拿得到。
             scheduleSigRetry(phase, pkg, cl);
-            return;
+            return false;
         }
         if (!sigOk) {
             safeLog(Log.ERROR, "module signature mismatch, refuse to hook " + pkg);
-            return;
+            return true;
         }
 
-        int mask = 0;
+        int mask;
+        SharedPreferences prefs = null;
         try {
-            SharedPreferences prefs = getRemotePreferences(Config.GROUP);
-            String spec = prefs == null ? null : prefs.getString(Config.KEY_PREFIX + pkg, null);
+            prefs = getRemotePreferences(Config.GROUP);
+        } catch (Throwable t) {
+            safeLog(Log.WARN, "getRemotePreferences failed for " + pkg + ": " + t + ", will retry");
+            scheduleSigRetry(phase, pkg, cl);
+            return false;
+        }
+        // R8：prefs==null 是「RemotePreferences 尚未连接/不可用」，不是「未启用」。
+        // 旧代码此时 spec=null → mask=0 → 永久跳过且日志误报 not enabled。
+        if (prefs == null) {
+            safeLog(Log.WARN, "remote prefs unavailable for " + pkg + ", will retry");
+            scheduleSigRetry(phase, pkg, cl);
+            return false;
+        }
+        try {
+            String spec = prefs.getString(Config.KEY_PREFIX + pkg, null);
             // 只读当前包，避免为诊断日志复制所有配置。
             mask = Config.parse(spec);
         } catch (Throwable t) {
@@ -99,18 +119,18 @@ public class PermNullModule extends XposedModule {
             // attach、类型异常）走延后重试，不能像 mask==0 那样永久放弃该包。
             safeLog(Log.WARN, "read config failed for " + pkg + ": " + t + ", will retry");
             scheduleSigRetry(phase, pkg, cl);
-            return;
+            return false;
         }
 
         // H11：mask==0 = 该包未启用（配置存在但为空/0），与上面的「读不到」明确区分。
         if (mask == 0) {
             safeLog(Log.INFO, "mask==0 for " + pkg + " (not enabled)");
-            return;
+            return true;
         }
         // M15/L19：只按包名去重，loader 仅用于定位 hook 目标，不进去重键。
         if (!installed.add(pkg)) {
             safeLog(Log.INFO, phase + " " + pkg + " already installed, skip");
-            return;
+            return true;
         }
 
         Hooks hooks = null;
@@ -134,6 +154,7 @@ public class PermNullModule extends XposedModule {
             }
             safeLog(Log.ERROR, "install failed for " + pkg + ": " + t);
         }
+        return true;
     }
 
     /**
@@ -167,14 +188,14 @@ public class PermNullModule extends XposedModule {
                     // M14：每次重试都取最新的 cl（可能已被后续回调刷新）。
                     ClassLoader latest = sigRetryPending.get(pkg);
                     if (latest == null) latest = cl;
-                    Boolean ok = ModuleIntegrity.isTrusted(this);
-                    if (ok == null) {
+                    // R9：直接看 install 返回值。旧代码靠 scheduleSigRetry 再调度，
+                    // 但 pending 里已有本 pkg → 只刷 cl 不起新线程，本线程 return 后
+                    // finally 删 pending，配置读取失败再也不会重试。
+                    // 现在 install 内部虽仍会调 scheduleSigRetry（只刷 cl 无副作用），
+                    // 是否继续完全由这里的返回值驱动：false=暂时失败，继续下一轮。
+                    boolean done = install(phase + "/retry" + i, pkg, latest);
+                    if (!done) {
                         continue;
-                    }
-                    if (ok) {
-                        install(phase + "/retry" + i, pkg, latest);
-                    } else {
-                        safeLog(Log.ERROR, "module signature mismatch, refuse to hook " + pkg);
                     }
                     return;
                 }

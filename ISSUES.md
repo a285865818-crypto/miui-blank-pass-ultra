@@ -231,3 +231,26 @@ remote prefs 不可用（回调早于 attach、框架不支持、类型异常）
 
 - **`check_ptrace` 自证式误报**（security.c:44-49）：`PTRACE_TRACEME` 让父进程成为 tracer，`PTRACE_DETACH` 用 pid=0 报 ESRCH 撤不掉，紧接着 `check_tracer_pid` 读到自己刚造的 tracer → 每次启动都判 `anti-debug detected`。只写日志不杀进程，属噪音，但会掩盖真实检测。
 - **Kotlin UI 层**已在前一轮审过，4 个中等问题已于 1.3.1 修复（诊断页文案写反、日志裁剪旧包名、回顶按钮协程不复位、Hook 状态误报）。
+
+---
+
+## 回归审查（v1.3.2 后，2026-11-15，三路 code-auditor，全部已修复于 v1.3.3）
+
+修复 66 项后的回归审查新发现 12 项（高 6 / 中 5 / 低 1），全部经主 Agent 逐条核实源码后修复。
+
+| # | 级别 | 位置 | 问题 | 修复 |
+|---|------|------|------|------|
+| R1 | 高 | Hooks.java applyBatch ×2 | 混合批次抛的 OperationApplicationException 被 PROTECTIVE 吞成 null 返回 | 两处 applyBatch 改 PASSTHROUGH |
+| R2 | 高 | Hooks.java openInputStream/openOutputStream | FileNotFoundException 被吞，H3 实际未修好 | 改 PASSTHROUGH |
+| R3 | 高 | Hooks.java checkPermission | 只勾应用列表时任意权限对自身包名都 GRANTED | 仅 grantedPerms 集合内权限才伪装 |
+| R4 | 高 | App.java onCreate | Security.verify 异常被吞放行，删 native 库即绕过签名校验 | fail-closed：异常时 killProcess |
+| R5 | 高 | Store.java scheduleSync | syncRequested 任务末尾才消费 → 无间隔永久自调度死循环 | 任务开始时先消费，仅执行期间新请求触发重跑 |
+| R6 | 高 | Security/ModuleIntegrity | 多签名 APK 只取字典序最小证书哈希比对，可能误杀 | 返回排序后完整集合（逗号拼接），任一命中即通过 |
+| R7 | 中 | Hooks.java AccountManager 回调 | handler=null 时同步回调，与系统主线程异步语义不符 | null handler 投主线程 Handler |
+| R8 | 中 | PermNullModule.java | getRemotePreferences() 返回 null 被当未启用永久跳过 | prefs==null 走延后重试 |
+| R9 | 中 | PermNullModule.java 重试线程 | 重试内配置读取再失败不会安排下一轮 | install 改返回三态 boolean，重试循环由返回值驱动 |
+| R10 | 中 | normalizeHex ×2 + build.sh | 只验长度不验 hex 字符，64 位笔误构建不告警运行时全拒载 | Java 双侧逐字符校验 + build.sh 字符集预检 |
+| R11 | 中 | build.sh | AAPT2_OVERRIDE 含空格路径被未加引号展开拆开 | EXTRA_ARGS 改 bash 数组 |
+| R12 | 低 | RootShell.java readOutput | 最后一次读恰好跨 64K 边界时 truncated 漏置位 | 部分追加（n > remaining）也置位 |
+
+回归审查同时确认无新问题：20 语言包 216 key 全一致、占位符/转义通过；native security.c、Store IPC 锁、force-stop 分批、SmsManager 覆盖、insert/call 语义、projection 处理均干净。

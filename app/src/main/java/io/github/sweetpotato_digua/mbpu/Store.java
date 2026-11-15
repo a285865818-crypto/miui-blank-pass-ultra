@@ -76,6 +76,12 @@ public final class Store {
         }
         try {
             SYNC_EXECUTOR.execute(() -> {
+                // R5：进入任务就先消费本次请求。原来在 finally 里才读 syncRequested，
+                // 读到的是本次 scheduleSync 自己置的 true → needAgain 恒真 → 无间隔
+                // 永久自调度。现在只有「syncRemote 执行期间新到达的请求」才会触发重跑。
+                synchronized (lock) {
+                    syncRequested = false;
+                }
                 try {
                     syncRemote(prefs);
                 } finally {

@@ -75,7 +75,7 @@ final class Hooks {
         if (Config.has(mask, Config.LOCATION)) installLocation();
         if (Config.has(mask, Config.CLIPBOARD)) installClipboard();
         if (Config.has(mask, Config.IDENT)) installIdentifiers();
-        if (Config.has(mask, Config.APPS)) installInstalledApps();
+        if (Config.has(mask, Config.APPS)) installInstalledApps(granted);
         if (Config.has(mask, Config.ACCOUNTS)) installAccounts();
         if (Config.has(mask, Config.MIC)) installMic();
         if (Config.has(mask, Config.CAMERA)) installCamera();
@@ -432,12 +432,14 @@ final class Hooks {
                 // 首参是 authority 而不是 Uri，必须在 Uri 过滤之前单独处理，
                 // 否则这个入口被 pt[0]!=Uri.class 直接跳过，批量操作完全拦不到。
                 if (m.getName().equals("applyBatch") && pt[0] == String.class) {
+                    // R1：filterBatchByUri 会抛 OperationApplicationException，两处
+                    // applyBatch 统一 PASSTHROUGH，保持本方法签名一致。
                     hook(m, chain -> {
                         if (!blockedAuthority((String) chain.getArg(0), authorities)) {
                             return chain.proceed();
                         }
                         return emptyBatchResult(chain.getArgs());
-                    });
+                    }, true);
                     continue;
                 }
                 // call(String authority, String method, String arg, Bundle extras)：
@@ -470,13 +472,15 @@ final class Hooks {
                         // H3 修复：之前返回空流，BitmapFactory.decodeStream 得到 null 后
                         // 调用方 .getWidth() NPE。改为与 openFileDescriptor 一致抛
                         // FileNotFoundException，应用自带的 IO 错误分支能接住。
+                        // R2：主动抛 FileNotFoundException 必须 PASSTHROUGH，
+                        // 否则被 PROTECTIVE 吞成 null 返回值（H3 曾因此没修好）。
                         hook(m, chain -> {
                             Uri u = (Uri) chain.getArg(0);
                             if (blocked(u, authorities)) {
                                 throw new java.io.FileNotFoundException("blocked by MBPU: " + u);
                             }
                             return chain.proceed();
-                        });
+                        }, true);
                         break;
                     case "openFileDescriptor":
                     case "openAssetFileDescriptor":
@@ -610,12 +614,14 @@ final class Hooks {
             }
             if (m.getName().equals("applyBatch")) {
                 if (pt[0] == String.class) {
+                    // R1：filterBatchByUri 会抛 OperationApplicationException，两处
+                    // applyBatch 统一 PASSTHROUGH，保持本方法签名一致。
                     hook(m, chain -> {
                         if (!blockedAuthority((String) chain.getArg(0), authorities)) {
                             return chain.proceed();
                         }
                         return emptyBatchResult(chain.getArgs());
-                    });
+                    }, true);
                 } else {
                     // applyBatch(ArrayList<ContentProviderOperation>) 没有 authority 形参：
                     // 按每个 operation 的 URI 判断，只吞命中屏蔽范围的；
@@ -626,7 +632,7 @@ final class Hooks {
                         // null 表示没有命中屏蔽范围，必须显式走原调用，
                         // 不能把 null 当作返回值（那等于吞掉整个批量操作）。
                         return filtered != null ? filtered : chain.proceed();
-                    });
+                    }, true);   // R1：混合批次抛的异常必须穿透给调用方
                 }
                 continue;
             }
@@ -780,7 +786,7 @@ final class Hooks {
 
     // ---------------------------------------------------------- installed apps
 
-    private void installInstalledApps() {
+    private void installInstalledApps(Set<String> granted) {
         Class<?> apm = load("android.app.ApplicationPackageManager");
         if (apm == null) return;
         for (Method m : apm.getDeclaredMethods()) {
@@ -815,8 +821,13 @@ final class Hooks {
             }
             if (permCheck) {
                 hook(m, chain -> {
+                    // R3：只伪装「受管权限集合」内的权限。原来不看权限名一律 GRANTED，
+                    // 只勾应用列表也会把 RECORD_AUDIO/CAMERA 等敏感权限伪授出去，
+                    // 诱导应用进入没有配套数据拦截的敏感功能路径。
+                    Object permArg = chain.getArgs().isEmpty() ? null : chain.getArg(0);
                     String targetPkg = chain.getArgs().size() > 1 ? (String) chain.getArg(1) : null;
-                    if (targetPkg != null && targetPkg.equals(pkg)) {
+                    if (permArg instanceof String && granted.contains(permArg)
+                            && pkg.equals(targetPkg)) {
                         return android.content.pm.PackageManager.PERMISSION_GRANTED;
                     }
                     return chain.proceed();
@@ -897,7 +908,9 @@ final class Hooks {
             if (handler instanceof android.os.Handler) {
                 ((android.os.Handler) handler).post(r);
             } else {
-                r.run();
+                // R7：系统语义是 null handler 投主线程异步回调，不是同步执行。
+                // 同步回调会在调用方返回前重入，打乱「先存 Future 再等回调」的状态机。
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(r);
             }
         } catch (Throwable ignored) {
             // 投递失败不影响 Future 本身，调用方仍可走 getResult()。

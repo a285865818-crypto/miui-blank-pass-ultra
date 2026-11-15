@@ -74,6 +74,9 @@ final class RootShell {
                 if (out.length() < MAX_OUTPUT_CHARS) {
                     int remaining = MAX_OUTPUT_CHARS - out.length();
                     out.append(buf, 0, Math.min(remaining, n));
+                    // R12：本次读就超界（部分字符被丢弃）也要置位——否则最后一次
+                    // 读恰好跨 64K 边界后紧接 EOF，truncated 永远为 false。
+                    if (n > remaining) truncated = true;
                 } else {
                     truncated = true;
                 }

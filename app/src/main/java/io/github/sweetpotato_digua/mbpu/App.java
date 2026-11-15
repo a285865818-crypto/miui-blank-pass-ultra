@@ -37,7 +37,13 @@ public class App extends Application {
         try {
             Security.verify(this);
         } catch (Throwable t) {
-            android.util.Log.e("MBPU", "Security.verify failed", t);
+            // R4：fail-closed。native 库被删/加载失败/校验代码抛异常时绝不能放行，
+            // 否则重打包者删掉 libmbpu_security.so 就能绕过签名校验继续用 Root 功能。
+            // Security 内部签名不匹配走 killProcess，到这里只剩「安全代码无法执行」，
+            // 同样拒绝运行。
+            android.util.Log.e("MBPU", "Security.verify failed, refuse to run", t);
+            android.os.Process.killProcess(android.os.Process.myPid());
+            return;
         }
         // 主题模式必须在使用前就位，否则首帧会用错配色再跳变
         store = new Store(this);

@@ -49,8 +49,10 @@ cd "$ROOT"
 # 这里在构建前就给出可读的告警，而不是让用户对着闪退猜。
 if [ -f local.properties ]; then
     _sig=$(sed -n 's/^EXPECTED_SIG_SHA256=//p' local.properties | head -1 | tr -d '[:space:]' | tr -d ':' | tr 'A-Z' 'a-z')
-    if [ -n "$_sig" ] && [ "${#_sig}" -ne 64 ]; then
-        echo "WARNING: local.properties 的 EXPECTED_SIG_SHA256 归一化后长度为 ${#_sig}，不是 64 位 hex。" >&2
+    # R10：长度与字符集都校验。64 位但含非 hex 字符的笔误以前不告警，
+    # 运行时必然校验失败（UI 杀进程、hook 全拒载），极难排查。
+    if [ -n "$_sig" ] && { [ "${#_sig}" -ne 64 ] || [ -n "$(printf '%s' "$_sig" | tr -d '0-9a-f')" ]; }; then
+        echo "WARNING: local.properties 的 EXPECTED_SIG_SHA256 不是合法的 64 位小写 hex。" >&2
         echo "         取值请去掉冒号并转小写，例如：" >&2
         echo "         keytool ... | grep SHA256 | sed 's/.*: //;s/://g' | tr 'A-Z' 'a-z'" >&2
     fi
@@ -74,21 +76,21 @@ done
 # 通过 AAPT2_OVERRIDE 指向包装器即可，脚本会自动加 -P 参数，不用改 gradle.properties。
 # 校验在 cd "$ROOT" 之后做，相对路径与 gradle 的解析基准一致（L30）；
 # 非空但不可执行直接报错，不静默退回 SDK 的 aapt2（M22）。
-EXTRA_ARGS=""
+# R11：用 bash 数组而不是字符串拼接——路径含空格时未加引号的 $EXTRA_ARGS
+# 会把一个参数拆成多个，Gradle 收到未知参数。
+EXTRA_ARGS=()
 if [ -n "$AAPT2_OVERRIDE" ] && [ ! -x "$AAPT2_OVERRIDE" ]; then
     echo "ERROR: AAPT2_OVERRIDE=$AAPT2_OVERRIDE 不存在或不可执行" >&2; exit 1
 fi
 if [ -n "$AAPT2_OVERRIDE" ]; then
-    EXTRA_ARGS="-Pandroid.aapt2FromMavenOverride=$AAPT2_OVERRIDE"
+    EXTRA_ARGS+=("-Pandroid.aapt2FromMavenOverride=$AAPT2_OVERRIDE")
 fi
 
 if [ "$VARIANT" = "debug" ]; then
-    # shellcheck disable=SC2086
-    "$GRADLE_BIN" assembleDebug --no-daemon $EXTRA_ARGS
+    "$GRADLE_BIN" assembleDebug --no-daemon "${EXTRA_ARGS[@]}"
     APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 else
-    # shellcheck disable=SC2086
-    "$GRADLE_BIN" assembleRelease --no-daemon $EXTRA_ARGS
+    "$GRADLE_BIN" assembleRelease --no-daemon "${EXTRA_ARGS[@]}"
     APK="$ROOT/app/build/outputs/apk/release/app-release.apk"
 fi
 

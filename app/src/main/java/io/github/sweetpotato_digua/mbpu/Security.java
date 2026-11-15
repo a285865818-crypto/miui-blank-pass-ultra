@@ -65,7 +65,15 @@ public final class Security {
     static String normalizeHex(String s) {
         if (s == null) return "";
         String t = s.trim().replace(":", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
-        return t.length() == 64 ? t : "";
+        // R10：长度 64 但含非 hex 字符（配置笔误）也必须判非法。否则原样进入比对，
+        // 运行时必然不匹配：UI 杀进程、hook 全拒载，而构建期毫无告警。
+        if (t.length() != 64) return "";
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            if (!hex) return "";
+        }
+        return t;
     }
 
     /* ===== Java 层签名 hash 计算 ===== */
@@ -108,7 +116,9 @@ public final class Security {
                 hashes.add(sha256Hex(md, s.toByteArray()));
             }
             Collections.sort(hashes);
-            return hashes.get(0);
+            // R6：多签名 APK 不能只取字典序最小值比对——预期证书不是最小值时会
+            // 误杀正常版本。返回排序后的完整集合（逗号拼接），verify 里逐一匹配。
+            return String.join(",", hashes);
         } catch (Throwable t) {
             android.util.Log.w("MBPU_SEC", "computeSigHash failed: " + t);
             return null;   // 读不到，不杀
@@ -161,10 +171,19 @@ public final class Security {
             } else {
                 // 归一化后若为空说明 computeSigHash 产物异常；但 verify 的入口值
                 // normalizeHex 已保证非空才进来，这里只可能是畸形值，按不匹配杀进程。
-                sigHash = normalizeHex(sigHash);   // 已是小写 64 hex，双保险
-                if (sigHash.isEmpty() || !nativeCheckSig(expected, sigHash)) {
+                // R6：computeSigHash 可能返回多个 hash（多签名，逗号拼接，单个时无逗号）。
+                // 任一证书命中期望值即通过；全部不匹配才杀。每个值先过 normalizeHex。
+                boolean matched = false;
+                for (String one : sigHash.split(",")) {
+                    String h = normalizeHex(one);
+                    if (!h.isEmpty() && nativeCheckSig(expected, h)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
                     android.util.Log.e("MBPU_SEC", "signature mismatch, killing process; got="
-                            + (sigHash.isEmpty() ? "<malformed>" : sigHash.substring(0, 8)));
+                            + sigHash.substring(0, Math.min(8, sigHash.length())));
                     Process.killProcess(Process.myPid());
                     System.exit(1);
                 }
