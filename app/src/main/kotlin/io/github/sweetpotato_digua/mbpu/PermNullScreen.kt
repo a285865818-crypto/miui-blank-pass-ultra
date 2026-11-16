@@ -314,6 +314,10 @@ internal fun PermNullScreen(
     /** 增量更新单个应用，避免开关一次就重建 589 条快照。 */
     fun updateMask(pkg: String, mask: Int) {
         masks = if (mask == 0) masks - pkg else masks + (pkg to mask)
+        // N15 修复：同步更新 changedAt，否则「最近修改」一直显示旧值。
+        // 非零配置写当前时间，完全关闭时清零。
+        val now = if (mask == 0) 0L else System.currentTimeMillis()
+        allApps = allApps.map { if (it.packageName == pkg) it.copy(changedAt = now) else it }
     }
 
     fun notify(message: String) {
@@ -407,9 +411,22 @@ internal fun PermNullScreen(
         )
         // 只有确实存在“已注入 hook 且仍在运行”的目标时才提示重启；
         // 从未重启过的应用没注入 hook，不需要强停。
+        // N10 修复：批量关闭后只判断本次 targets 是否需要重启，不要用全局计划。
+        // 原来 computeRestartPlan(store) 会把其他应用的待安装/待卸载记录也算进来，
+        // 导致批量操作 B 却连带强停无关的 A。
         if (targets.size - failed.size > 0) {
             askRestartAfterBatch = withContext(Dispatchers.IO) {
-                runCatching { computeRestartPlan(store).total > 0 }.getOrDefault(true)
+                runCatching {
+                    val enabled = store.snapshot().filterKeys { it != Config.MODULE_PKG }
+                        .filterValues { it != 0 }.keys
+                    val pendingStop = store.pendingStops() - Config.MODULE_PKG
+                    val scope = enabled + pendingStop
+                    // 只保留本次操作涉及的目标
+                    val mine = scope.intersect(targets.toSet())
+                    if (mine.isEmpty()) return@runCatching false
+                    val running = RootShell.runningOf(mine)
+                    running.isNotEmpty()
+                }.getOrDefault(true)
             }
         }
     }
@@ -520,6 +537,15 @@ internal fun PermNullScreen(
         snackbarVisible = false
     }
 
+    // N14 修复：语言切换后清空本地化文案，让状态重新按当前语言生成。
+    // 原来 rootStatus/statusText 一旦非空就永远保留旧语言，直到手动刷新。
+    LaunchedEffect(home.labelsLocale) {
+        if (home.labelsLocale.isNotEmpty()) {
+            rootStatus = ""
+            statusText = ""
+        }
+    }
+
     LaunchedEffect(Unit) {
         if (rootStatus.isEmpty()) rootStatus = context.getString(R.string.root_checking)
     }
@@ -527,7 +553,7 @@ internal fun PermNullScreen(
     // root 检测只在首次进入时做一次。
     // 之前挂在 showRestartDialog 上，每次页面重组都会先写「检测中…」再写结果，
     // 表现为回到主页时 root 文案闪一下。
-    LaunchedEffect(Unit) {
+    LaunchedEffect(Unit, home.labelsLocale) {
         if (rootStatus.isEmpty() || rootStatus == context.getString(R.string.root_checking)) {
             rootStatus = withContext(Dispatchers.IO) { describeRoot(context) }
         }
@@ -551,7 +577,7 @@ internal fun PermNullScreen(
     }
 
     // 服务状态是同步 IPC，首次进入时在后台取一次。
-    LaunchedEffect(Unit) {
+    LaunchedEffect(Unit, home.labelsLocale) {
         if (statusText.isEmpty()) {
             statusText = withContext(Dispatchers.IO) { describeService(context) }
         }
@@ -2235,8 +2261,9 @@ private fun readHookStats(): Map<String, HookStat>? {
         return null
     }
     // 主进程与子进程分开记录：同一个包可能同时有 pkg 和 pkg:remote 两份注入。
+    // N9 修复：子进程按完整进程名保留，聚合时再合并，避免折叠覆盖。
     val mainStats = LinkedHashMap<String, HookStat>()
-    val childStats = LinkedHashMap<String, HookStat>()
+    val childStats = LinkedHashMap<String, LinkedHashMap<String, HookStat>>()
     val re = Regex("""HOOKSTAT\|([^|]+)\|(\d+)\|(\d+)""")
     for (line in result.output.lineSequence()) {
         val m = re.find(line) ?: continue
@@ -2244,17 +2271,24 @@ private fun readHookStats(): Map<String, HookStat>? {
         val ok = m.groupValues[2].toIntOrNull() ?: continue
         val total = m.groupValues[3].toIntOrNull() ?: continue
         val stat = HookStat(ok = ok, total = total)
-        if (process.contains(':')) childStats[process.substringBefore(':')] = stat
+        if (process.contains(':')) {
+            val base = process.substringBefore(':')
+            childStats.getOrPut(base) { LinkedHashMap() }[process] = stat
+        }
         else mainStats[process] = stat
     }
     val out = LinkedHashMap<String, HookStat>()
     for (base in (mainStats.keys + childStats.keys)) {
         val main = mainStats[base]
-        val child = childStats[base]
+        val children = childStats[base]
+        val child = children?.values?.reduceOrNull { a, b ->
+            HookStat(ok = a.ok + b.ok, total = a.total + b.total)
+        }
         out[base] = when {
             main != null && child != null -> main.copy(child = child)
             main != null -> main
-            else -> child!!
+            child != null -> child
+            else -> continue
         }
     }
     return out

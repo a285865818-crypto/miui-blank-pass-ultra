@@ -254,3 +254,29 @@ remote prefs 不可用（回调早于 attach、框架不支持、类型异常）
 | R12 | 低 | RootShell.java readOutput | 最后一次读恰好跨 64K 边界时 truncated 漏置位 | 部分追加（n > remaining）也置位 |
 
 回归审查同时确认无新问题：20 语言包 216 key 全一致、占位符/转义通过；native security.c、Store IPC 锁、force-stop 分批、SmsManager 覆盖、insert/call 语义、projection 处理均干净。
+
+---
+
+## 第三轮审查（v1.3.3 后，2026-11-15，三路 code-auditor，19 项已修复于 v1.3.4）
+
+| # | 级别 | 位置 | 问题 | 修复 |
+|---|------|------|------|------|
+| N1 | 高 | Hooks.java:726 | 短信发送漏拦 sendMultimediaMessage / sendMultipartTextMessageWithoutPersisting | 补全所有 send*Message* 重载 |
+| N2 | 高 | Hooks.java:846 | addOnAccountsUpdatedListener 返回 void 未被 hook，回调带真实 Account[] | 拦截注册，立即用空数组回调 |
+| N3 | 高 | Hooks.java:795 | getLaunchIntentForPackage / AsUser 变体未拦，仍可探测安装状态 | 按 startsWith 匹配补全 |
+| N4 | 高 | Hooks.java:721 | getMessagesFromIcc / getAllMessagesFromIcc 未拦，直读 SIM 卡短信 | 返回空列表 |
+| N5 | 中 | Hooks.java:271 | 混合权限请求把无关权限也 DENIED | 只短路「全部受管」请求 |
+| N6 | 中 | Store.java:78 | remote 换代竞态，新 remote 的写入被丢 | 清 syncRequested + 重新调度 |
+| N7 | 中 | App.java:86 | getRemotePreferences 瞬时失败无重试 | 延迟 1 秒重试 |
+| N8 | 中 | DebugScreen.kt:746/786 | trimLogLine 删掉包名后 filterLogText 永远匹配不上 | 保留包名只删模块标识 |
+| N9 | 中 | PermNullScreen.kt:2247 / DebugScreen.kt:835 | 子进程折叠覆盖，Hook 状态随机误报 | 按完整进程名保留，聚合时合并 |
+| N10 | 中 | PermNullScreen.kt:411 | 批量关闭用全局重启计划，连带强停无关应用 | 限缩为本次 targets |
+| N11 | 中 | DebugScreen.kt:855 | 注释说「完整日志」，实际 tail -n 4000 静默截断 | 去掉 tail，全量读取 |
+| N12 | 中 | app/build.gradle.kts:30 | buildConfigField 未转义属性值 | 转义反斜杠/引号/控制字符 |
+| N13 | 低 | Hooks.java:1013 | AudioRecord.read(ByteBuffer) 没校验 isDirect | 补 direct 校验 |
+| N14 | 低 | PermNullScreen.kt:408 | 切语言后 Root/LSPosed 状态文案仍旧 | labelsLocale 变化时清空重新生成 |
+| N15 | 低 | PermNullScreen.kt:315 | 改配置后 changedAt 不更新 | updateMask 同步更新 |
+| N16 | 低 | DebugScreen.kt:108 | 换 SAF 目录不释放旧持久授权 | 新目录前释放旧的 |
+| N17 | 低 | DebugScreen.kt:651 | 内层 runCatching 吞异常 | 去掉内层 runCatching |
+| N18 | 低 | build_native.sh:92 | LLD 覆盖变量从没被使用 | 加 ${LLD:+--ld-path="$LLD"} |
+| N19 | 低 | security.c:54/190 | read() 没处理 EINTR | 信号打断时重试 |

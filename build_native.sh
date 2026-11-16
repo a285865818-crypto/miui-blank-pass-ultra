@@ -89,7 +89,7 @@ build() {
     # lib/clang/<ver>，clang 才能按 lib/linux/libclang_rt.builtins-<arch>-android.a
     # 解析到库（L27）。
     "$CC" --target="$target" --sysroot="$SYSROOT" \
-        -shared -fPIC -fuse-ld=lld -rtlib=compiler-rt \
+        -shared -fPIC -fuse-ld=lld -rtlib=compiler-rt ${LLD:+--ld-path="$LLD"} \
         -resource-dir "$RT_RESOURCEDIR" \
         -o "$OUT/$abi/libmbpu_security.so" \
         "$SRC" -lc -llog

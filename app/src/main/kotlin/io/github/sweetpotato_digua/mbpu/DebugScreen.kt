@@ -115,6 +115,13 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                 true
             }.getOrDefault(false)
             if (persisted) {
+                // N16 修复：换目录时释放旧的持久授权，避免长期累积。
+                val oldUri = store.exportTreeUri()
+                if (oldUri.isNotEmpty() && oldUri != uri.toString()) {
+                    runCatching {
+                        resolver.releasePersistableUriPermission(Uri.parse(oldUri), flags)
+                    }
+                }
                 store.setExportTreeUri(uri.toString())
                 exportDir = uri.toString()
                 messageIsError = false
@@ -648,7 +655,8 @@ private fun rememberTreePicker(onPicked: (Uri?) -> Unit): () -> Unit {
             key,
             ActivityResultContracts.OpenDocumentTree(),
         ) { uri -> latest(uri) }
-        launch = { runCatching { callback.launch(null) } }
+        // N17 修复：内层不吞异常，让外层的 onFailure 能收到启动失败。
+        launch = { callback.launch(null) }
         onDispose {
             launch = null
             runCatching { callback.unregister() }
@@ -807,11 +815,11 @@ private fun trimLogLine(raw: String): String {
             Regex("""^\[\s*\S+\s+\d+:\s*\d+:\s*\d+\s+[VDIWEF]/LSPosedFramework\s*\]\s*"""),
             "",
         )
-        // 包名从 Config 取，别再硬编码字面量：之前写死了旧包名 com.sweetpotato.MBPU，
-        // 包名迁移后这条正则永远匹配不上，诊断页每行都挂着整段模块标识。
+        // N8 修复：裁剪时保留目标包名，否则 filterLogText 的 line.contains(pkg)
+        // 永远匹配不上（包名已被删）。只删模块标识段，保留 (pkg)。
         .replace(
-            Regex("""\(\S+?\)\[${Regex.escape(Config.MODULE_PKG)},[^\]]*\]\s*"""),
-            "",
+            Regex("""\)\[${Regex.escape(Config.MODULE_PKG)},[^\]]*\]"""),
+            ")",
         )
         .trim()
     return listOf(level, message).filter { it.isNotEmpty() }.joinToString(" ")
@@ -824,25 +832,36 @@ private fun trimLogLine(raw: String): String {
  */
 private fun parseHookStats(lines: List<String>): Map<String, HookStat> {
     val mainStats = LinkedHashMap<String, HookStat>()
-    val childStats = LinkedHashMap<String, HookStat>()
     val re = Regex("""HOOKSTAT\|([^|]+)\|(\d+)\|(\d+)""")
+    // N9 修复：子进程按完整进程名分别保留，不要折叠成 base。
+    // 原来 childStats[process.substringBefore(':')] 会让 pkg:remote 覆盖 pkg:push，
+    // 后读的一条盖住前面的，Hook 状态可能随机误报。
+    val childStats = LinkedHashMap<String, LinkedHashMap<String, HookStat>>()
     for (line in lines) {
         val m = re.find(line) ?: continue
         val process = m.groupValues[1].trim()
         val ok = m.groupValues[2].toIntOrNull() ?: continue
         val total = m.groupValues[3].toIntOrNull() ?: continue
         val stat = HookStat(ok = ok, total = total)
-        if (process.contains(':')) childStats[process.substringBefore(':')] = stat
+        if (process.contains(':')) {
+            val base = process.substringBefore(':')
+            childStats.getOrPut(base) { LinkedHashMap() }[process] = stat
+        }
         else mainStats[process] = stat
     }
     val out = LinkedHashMap<String, HookStat>()
     for (base in (mainStats.keys + childStats.keys)) {
         val main = mainStats[base]
-        val child = childStats[base]
+        val children = childStats[base]
+        // 把该包所有子进程聚合成一条：ok/total 分别累加
+        val child = children?.values?.reduceOrNull { a, b ->
+            HookStat(ok = a.ok + b.ok, total = a.total + b.total)
+        }
         out[base] = when {
             main != null && child != null -> main.copy(child = child)
             main != null -> main
-            else -> child!!
+            child != null -> child
+            else -> continue
         }
     }
     return out
@@ -852,7 +871,9 @@ private fun readFullLog(): String {
     val script = buildString {
         append("f=\$(ls -t /data/adb/lspd/log/modules_*.log 2>/dev/null | head -1); ")
         append("[ -n \"\$f\" ] || exit 3; ")
-        append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\" | tail -n 4000")
+        // N11 修复：复制/导出应拿完整日志，不再 tail -n 4000 静默截断。
+        // 日志文件本身有大小限制（LSPosed 轮转），全量读取不会无限膨胀。
+        append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\"")
     }
     val result = RootShell.exec(script)
     if (result.exitCode == 3) throw IllegalStateException("no log file")

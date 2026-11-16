@@ -114,7 +114,14 @@ public final class Store {
         try {
             synchronized (lock) {
                 // 锁内只做本地读与取引用；prefs.getAll() 是跨进程 IPC，禁止持 lock 调用。
-                if (remote != prefs) return;
+                // N6 修复：remote 已换代时不能把本次请求静默丢掉。清掉「同步进行中」
+                // 标志并重新置起 syncRequested，让 finally 对当前 remote 再调度一次；
+                // 否则本次配置修改永远不会写到新 remote，目标应用继续读旧值。
+                if (remote != prefs) {
+                    syncRequested = true;
+                    syncScheduled = false;
+                    return;
+                }
                 localValues = local.getAll();
                 dirty = dirtyConfigsLocked();
             }

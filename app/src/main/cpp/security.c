@@ -22,6 +22,7 @@
 #include <arpa/inet.h>
 #include <android/log.h>
 #include <pthread.h>
+#include <errno.h>
 
 #define LOG_TAG "MBPU_SEC"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -51,7 +52,9 @@ static int check_tracer_pid(void) {
     char buf[256] = {0};
     int fd = open("/proc/self/status", O_RDONLY);
     if (fd < 0) return 0;
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    ssize_t n;
+    // N19 修复：read 被信号打断（EINTR）时重试，不要误判为检测失败。
+    do { n = read(fd, buf, sizeof(buf) - 1); } while (n < 0 && errno == EINTR);
     close(fd);
     if (n <= 0) return 0;
     char *p = strstr(buf, "TracerPid:");
@@ -187,7 +190,12 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegrity(JNIEnv *env, jcl
     char buf[4096];
     char prev[16] = {0};   /* 跨块半词缓冲 */
     ssize_t n;
-    while ((n = read(fd, buf, sizeof(buf) - 1)) > 0) {
+    // N19 修复：EINTR 时继续读，其他错误才中止。
+    while (true) {
+        n = read(fd, buf, sizeof(buf) - 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+
         buf[n] = '\0';
         char joined[sizeof(prev) + sizeof(buf)];
         size_t plen = strlen(prev);

@@ -24,10 +24,17 @@ android {
         applicationId = "io.github.sweetpotato_digua.mbpu"
         minSdk = 29
         targetSdk = 37
-        versionCode = 10
-        versionName = "1.3.3"
+        versionCode = 11
+        versionName = "1.3.4"
         // 期望的签名证书 SHA-256（小写 hex）。留空 = 不校验签名，方便他人构建。
-        buildConfigField("String", "EXPECTED_SIG_SHA256", "\"$expectedSigHash\"")
+        // N12 修复：转义 Java 字符串里的反斜杠、双引号和控制字符，
+        // 避免 local.properties 里的值含这些字符时生成非法 BuildConfig.java。
+        val escapedSigHash = expectedSigHash
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        buildConfigField("String", "EXPECTED_SIG_SHA256", "\"$escapedSigHash\"")
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }

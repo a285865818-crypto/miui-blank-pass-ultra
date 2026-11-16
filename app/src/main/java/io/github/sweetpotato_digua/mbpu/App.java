@@ -85,12 +85,29 @@ public class App extends Application {
                 @Override
                 public void onServiceBind(XposedService s) {
                     service = s;
+                    // N7 修复：getRemotePreferences 瞬时失败不再置 null 放弃，
+                    // 而是延迟重试，否则进程内只能用本地镜像，离线修改无法同步。
                     try {
                         remote = s.getRemotePreferences(Config.GROUP);
                     } catch (Throwable t) {
                         remote = null;
                     }
                     store.setRemote(remote);
+                    if (remote == null) {
+                        // 失败：1 秒后重试一次，避免 daemon 尚未就绪时永久失败
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                            if (service != s) return;   // 服务已换，放弃
+                            try {
+                                remote = s.getRemotePreferences(Config.GROUP);
+                            } catch (Throwable t) {
+                                remote = null;
+                            }
+                            if (remote != null) {
+                                store.setRemote(remote);
+                                fire();
+                            }
+                        }, 1000);
+                    }
                     fire();
                 }
 

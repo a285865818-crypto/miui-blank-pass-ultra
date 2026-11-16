@@ -261,20 +261,17 @@ final class Hooks {
                 postResult((android.app.Activity) self, perms, results, requestCode);
                 return null;
             }
-            // 只有请求中至少一个权限被本模块管理时才介入。
-            // 受管权限伪授予 GRANTED（后续 hook 返回空数据），
-            // 非受管权限保持 DENIED（让应用走系统真实流程）。
-            boolean anyManaged = false;
+            // N5 修复：混合权限请求不能把无关权限也 DENIED。
+            // 只有「全部权限都受管」才短路并伪授予 GRANTED；
+            // 只要有非受管权限，就交给系统走真实流程（受管权限由后续 hook 拦数据）。
+            boolean allManaged = true;
             for (String perm : perms) {
-                if (perm != null && granted.contains(perm)) { anyManaged = true; break; }
+                if (perm != null && !granted.contains(perm)) { allManaged = false; break; }
             }
-            if (anyManaged) {
+            if (allManaged && perms.length > 0) {
                 int[] results = new int[perms.length];
                 for (int i = 0; i < perms.length; i++) {
-                    boolean managed = perms[i] != null && granted.contains(perms[i]);
-                    results[i] = managed
-                            ? PackageManager.PERMISSION_GRANTED
-                            : PackageManager.PERMISSION_DENIED;
+                    results[i] = PackageManager.PERMISSION_GRANTED;
                 }
                 postResult((android.app.Activity) self, perms, results, requestCode);
                 return null;
@@ -296,19 +293,15 @@ final class Hooks {
             Object self = chain.getThisObject();
             if (self == null) return chain.proceed();
 
-            // 只有请求中至少一个权限被本模块管理时才介入，否则走系统真实流程。
-            boolean anyManaged = false;
+            // N5 修复：Fragment 分支同样只短路「全部受管」的请求，混合请求走系统流程。
+            boolean allManaged = true;
             for (String perm : perms) {
-                if (perm != null && granted.contains(perm)) { anyManaged = true; break; }
+                if (perm != null && !granted.contains(perm)) { allManaged = false; break; }
             }
-            if (!anyManaged) return chain.proceed();
-            // 混合请求按位区分：受管 GRANTED，非受管 DENIED。
+            if (!allManaged || perms.length == 0) return chain.proceed();
             int[] results = new int[perms.length];
             for (int i = 0; i < perms.length; i++) {
-                boolean managed = perms[i] != null && granted.contains(perms[i]);
-                results[i] = managed
-                        ? PackageManager.PERMISSION_GRANTED
-                        : PackageManager.PERMISSION_DENIED;
+                results[i] = PackageManager.PERMISSION_GRANTED;
             }
             try {
                 Object host = getActivity == null ? null : getActivity.invoke(self);
@@ -724,9 +717,24 @@ final class Hooks {
         for (Method m : sms.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers())) continue;
             String n = m.getName();
+            // N1 修复：补全所有发送类重载，包括彩信与"不持久化"变体。
+            // 之前漏掉 sendMultipartTextMessageWithoutPersisting / sendMultimediaMessage，
+            // 勾选 SMS 的应用仍能真实发出彩信。
             if (n.equals("sendTextMessage") || n.equals("sendMultipartTextMessage")
-                    || n.equals("sendTextMessageWithoutPersisting") || n.equals("sendDataMessage")) {
+                    || n.equals("sendTextMessageWithoutPersisting")
+                    || n.equals("sendMultipartTextMessageWithoutPersisting")
+                    || n.equals("sendMultimediaMessage")
+                    || n.equals("sendMultimediaMessageWithoutPersisting")
+                    || n.equals("sendDataMessage")) {
                 hook(m, chain -> null);   // no-op：不抛异常，避免崩宿主
+            }
+            // N4 修复：SmsManager 的 ICC 读取接口完全没拦，能绕过 ContentResolver
+            // 空结果直接读 SIM 卡短信。这些查询返回 List<SmsMessage>，给空列表。
+            if (n.equals("getMessagesFromIcc") || n.equals("getAllMessagesFromIcc")
+                    || n.equals("getSmsMessagesForFinancialApp")) {
+                if (List.class.isAssignableFrom(m.getReturnType())) {
+                    hook(m, chain -> new java.util.ArrayList<>());
+                }
             }
         }
         log("sms send hooks installed (no-op)");
@@ -792,18 +800,24 @@ final class Hooks {
         for (Method m : apm.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers())) continue;
             String n = m.getName();
-            boolean listing = n.equals("getInstalledPackages") || n.equals("getInstalledApplications");
-            boolean querying = n.equals("queryIntentActivities") || n.equals("queryIntentServices")
-                    || n.equals("queryIntentReceivers") || n.equals("queryIntentContentProviders")
-                    || n.equals("queryBroadcastReceivers");
-            // M2 修复：原来只拦列举和 Intent 查询，逐包查询（getPackageInfo/getApplicationInfo）
-            // 不拦——应用靠 NameNotFoundException 判断是否安装，能完全枚举。补上。
-            boolean perPkg = n.equals("getPackageInfo") || n.equals("getApplicationInfo");
+            // N3 修复：补全所有能探测安装状态的公开查询 API，不只那 4 个方法名。
+            // 枚举类：返回 List/数组的查询全部给空
+            boolean listing = n.startsWith("getInstalledPackages") || n.startsWith("getInstalledApplications");
+            boolean querying = n.startsWith("queryIntentActivities") || n.startsWith("queryIntentServices")
+                    || n.startsWith("queryIntentReceivers") || n.startsWith("queryIntentContentProviders")
+                    || n.startsWith("queryBroadcastReceivers") || n.startsWith("queryIntentActivityOptions");
+            // 逐包探测类：getPackageInfo / getApplicationInfo / getLaunchIntentForPackage
+            // 以及它们的 AsUser 变体。getLaunchIntentForPackage 返回 null 即"未安装"。
+            boolean perPkg = n.startsWith("getPackageInfo") || n.startsWith("getApplicationInfo")
+                    || n.equals("getLaunchIntentForPackage");
             // M6 修复：checkPermission 也在 ApplicationPackageManager 上有具体实现
             // （不是抽象 PackageManager），可 hook。原来只遍历了 ContextImpl，
             // 用 pm.checkPermission 自检的应用读到 DENIED，走「无权限」分支。
             boolean permCheck = n.equals("checkPermission") && m.getReturnType() == int.class;
             if (perPkg) {
+                // N3 细分：getLaunchIntentForPackage 返回 Intent，null = 未安装（安全）；
+                // 其余返回 PackageInfo/ApplicationInfo，抛 NameNotFoundException 才是系统语义。
+                boolean isLaunchQuery = n.equals("getLaunchIntentForPackage");
                 hook(m, chain -> {
                     Object arg0 = chain.getArgs().isEmpty() ? null : chain.getArg(0);
                     String target = null;
@@ -813,6 +827,7 @@ final class Hooks {
                     }
                     // 自身包名放行，其余一律「未安装」（应用已有处理路径）
                     if (target != null && !target.equals(pkg)) {
+                        if (isLaunchQuery) return null;   // Intent 查询返回 null 是合法语义
                         throw new android.content.pm.PackageManager.NameNotFoundException(target);
                     }
                     return chain.proceed();
@@ -848,6 +863,37 @@ final class Hooks {
         if (am == null) return;
         for (Method m : am.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers())) continue;
+            // N2 修复：addOnAccountsUpdatedListener 返回 void，之前完全没拦。
+            // 应用注册后回调直接拿到真实 Account[]，updateImmediately=true 时注册即泄露。
+            // 这里拦截注册：不给系统注册 listener，但立即用空数组回调一次，
+            // 让应用认为「已注册且当前无账户」。之后系统不会再回调（因为没注册）。
+            if (m.getName().equals("addOnAccountsUpdatedListener")) {
+                hook(m, chain -> {
+                    Object listener = chain.getArg(0);
+                    if (listener == null) return null;
+                    // updateImmediately 参数：找到第一个 boolean 参数
+                    boolean immediate = false;
+                    for (int i = 0; i < chain.getArgs().size(); i++) {
+                        if (chain.getArg(i) instanceof Boolean) {
+                            immediate = (Boolean) chain.getArg(i);
+                            break;
+                        }
+                    }
+                    if (immediate) {
+                        // 投到主线程，模拟系统行为
+                        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                            try {
+                                listener.getClass().getMethod("onAccountsUpdated", Account[].class)
+                                        .invoke(listener, new Account[0]);
+                            } catch (Throwable ignored) {
+                            }
+                        });
+                    }
+                    return null;   // 不真正注册，阻断后续回调
+                });
+                continue;
+            }
+            // removeOnAccountsUpdatedListener 不需要拦：没注册过，系统自然找不到。
             if (m.getReturnType() == Account[].class) {
                 hook(m, chain -> new Account[0]);
             } else if (m.getReturnType() == android.accounts.AccountManagerFuture.class) {
@@ -1016,7 +1062,10 @@ final class Hooks {
                     if (error != null) return error;
                     ByteBuffer buf = (ByteBuffer) chain.getArg(0);
                     int size = ((Number) chain.getArg(1)).intValue();
-                    if (buf == null || buf.isReadOnly() || size < 0 || size > buf.remaining()) {
+                    // N13 修复：系统 API 要求 direct ByteBuffer，非 direct 应报参数错误。
+                    // 之前没校验 isDirect()，堆缓冲区被当成功处理，语义不一致。
+                    if (buf == null || buf.isReadOnly() || !buf.isDirect()
+                            || size < 0 || size > buf.remaining()) {
                         return android.media.AudioRecord.ERROR_BAD_VALUE;
                     }
                     byte silence = ((android.media.AudioRecord) chain.getThisObject()).getAudioFormat()
