@@ -9,7 +9,7 @@
 | 类别 | 效果 |
 | --- | --- |
 | 通讯录 | 权限视为已授予，查询返回空列表 |
-| 短信 | 权限视为已授予，查询返回空列表 |
+| 短信 | 权限视为已授予，查询返回空列表，发送静默失败 |
 | 通话记录 | 权限视为已授予，查询返回空列表 |
 | 日历 | 权限视为已授予，查询返回空列表 |
 | 相册媒体 | 媒体权限视为已授予，图片 / 视频 / 音频返回空 |
@@ -172,7 +172,7 @@ build.sh / build_native.sh                  构建脚本
 - 部分应用启动时会扫描存储，拿到空结果后可能闪退或停在启动页（应用内「温馨提示」有说明）
 - `ContentProviderClient.call(String method, String arg, Bundle)` 这类拿不到 authority 的三参调用未拦截
 - `MediaRecorder` 录音链路未 hook，只覆盖了 `AudioRecord`
-- 不带 authority 的 `applyBatch` 命中时按整批伪成功处理，混合批次会吞掉自有 provider 的写入
+- 不带 authority 的 `applyBatch`：全部命中屏蔽范围时返回伪成功；混合批次抛 `OperationApplicationException` 引导应用回滚
 - 卸载应用后配置残留不会自动清理，重装同包名会继承旧配置
 
 ## 免责声明
