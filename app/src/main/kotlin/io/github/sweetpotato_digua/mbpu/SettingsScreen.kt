@@ -37,6 +37,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 fun SettingsScreen(
     store: Store,
     onBack: () -> Unit,
+    onConfigRestored: () -> Unit,
     onOpenTheme: (Boolean) -> Unit,
     onOpenLanguage: (Boolean) -> Unit,
     onOpenAbout: (Boolean) -> Unit,
@@ -112,6 +113,10 @@ fun SettingsScreen(
                         onClick = { onOpenLanguage(fromRight()) },
                     )
                 }
+            }
+
+            item {
+                ConfigBackupSection(store = store, onConfigRestored = onConfigRestored)
             }
 
             item {
@@ -322,12 +327,20 @@ fun AboutScreen(store: Store, onBack: () -> Unit) {
                         style = MiuixTheme.textStyles.body2,
                         color = MiuixTheme.colorScheme.onBackground,
                     )
-                    Text(
-                        text = stringResource(R.string.about_changelog_body),
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
+                    // 显式分行：aapt2 对字符串资源中 \n 的处理在不同版本不一致，
+                    // 兼容两种情况：已编译为 0x0A 的换行符，或仍为字面量 \n。
+                    val changelogLines = stringResource(R.string.about_changelog_body)
+                        .replace("\\n", "\n")  // 字面量 \n → 真换行
+                        .split(Regex("\\r?\\n"))
+                        .filter { it.isNotBlank() }
+                    changelogLines.forEach { line ->
+                        Text(
+                            text = line,
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
                 }
             }
 

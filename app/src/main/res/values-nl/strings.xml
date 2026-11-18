@@ -121,7 +121,7 @@
     <string name="search_history_remove">Houd ingedrukt om dit item te verwijderen</string>
     <string name="about_changelog_section">Wijzigingen</string>
     <string name="about_changelog_title">Wijzigingen in %1$s:</string>
-    <string name="about_changelog_body">Enkele bekende problemen opgelost.</string>
+    <string name="about_changelog_body">Nieuw: JSON-configuratie back-up en herstel. Exporteer/importeer blokkeringsconfiguraties voor alle apps.\nNieuw: Blokkeerstatistieken. Ranglijst van geblokkeerde API-aanroepen per app in diagnostiek.\nEnkele bekende problemen opgelost.</string>
     <string name="debug_export_log_downloads">Logboek exporteren naar Downloads</string>
     <string name="debug_export_log_custom">Logboek exporteren naar aangepaste map</string>
 </resources>

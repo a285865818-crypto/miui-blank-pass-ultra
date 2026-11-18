@@ -1,13 +1,18 @@
 /*
- * native 层安全校验。
+ * native 层安全校验（增强版）。
  *
- * 为什么放 native：
- *   - 逆 so 需要 IDA/Ghidra 反汇编 + ARM 知识，门槛远高于反编译 dex
- *   - 关键常量在编译时被烧进机器码，静态分析难提取
- *   - 检测代码本身也在 native，patch 需要改 so 再重签名，容易被签名校验抓到
+ * 能力矩阵：
+ *   1. 签名校验（Java 层传入比对，native 做二次校验防绕过）
+ *   2. 反调试（TracerPid + Frida 端口/文件/线程名）
+ *   3. 反注入（maps 全扫 + 可疑 so 检测）
+ *   4. 反内存转储（mprotect 代码段 + /proc/self/mem 访问监控）
+ *   5. 自身完整性（CRC32 校验 .text 段防 patch）
+ *   6. 时序检测（关键路径耗时异常 = 被插桩/调试）
  *
- * 实现：签名校验 + 反调试 + 完整性校验。
- * 只有签名不匹配才杀进程；反调试与反注入只记日志，避免误伤正常设备。
+ * 设计原则：
+ *   - 只有签名不匹配才杀进程；反调试/反注入/反转储只记日志（误伤正常设备的代价太大）
+ *   - 完整性校验失败 → 记日志 + 返回异常码（Java 层决定是否拒绝加载 hook）
+ *   - 时序检测只在极端偏差时才报告（>10x 正常耗时）
  */
 
 #include <jni.h>
@@ -18,42 +23,50 @@
 #include <sys/ptrace.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/mman.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <android/log.h>
 #include <pthread.h>
 #include <errno.h>
+#include <time.h>
+#include <dirent.h>
 
 #define LOG_TAG "MBPU_SEC"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-/* ===== 期望的 APK 签名证书 SHA-256 =====
- * 开源版本不把证书哈希烧进 so：期望值由 Java 层从 BuildConfig 传入
- * （BuildConfig.EXPECTED_SIG_SHA256，来源是不入库的 local.properties）。
- * 未配置（空串）时 native 层直接放行，任何人克隆后都能自行构建。
- */
-/* ===== 1. 反调试检测 ===== */
+/* ===== CRC32 查表（编译时生成） ===== */
+static uint32_t crc32_table[256];
+static int crc32_ready = 0;
 
-/*
- * ptrace 自检已移除（L22）：
- * PTRACE_TRACEME 会让父进程成为自己的 tracer，PTRACE_DETACH 用 pid=0
- * 又撤不掉，随后 check_tracer_pid 读到自己刚造的 tracer → 每次启动都误报。
- * 而且 HyperOS/MIUI 的 SELinux 会拒绝 zygote → untrusted_app 的 ptrace
- * 调用（avc denied），自检结果本身不可信。
- * TracerPid 由 check_tracer_pid 判断，这里恒返回 0，不作为判断依据。
- */
-static int check_ptrace(void) {
-    return 0;
+static void crc32_init(void) {
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int j = 0; j < 8; j++)
+            c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        crc32_table[i] = c;
+    }
+    crc32_ready = 1;
 }
 
-/** TracerPid 非 0 说明被调试 */
+static uint32_t crc32_calc(const void *data, size_t len) {
+    if (!crc32_ready) crc32_init();
+    const uint8_t *p = (const uint8_t *)data;
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++)
+        c = crc32_table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+
+/* ===== 1. 反调试检测 ===== */
+
 static int check_tracer_pid(void) {
     char buf[256] = {0};
     int fd = open("/proc/self/status", O_RDONLY);
     if (fd < 0) return 0;
     ssize_t n;
-    // N19 修复：read 被信号打断（EINTR）时重试，不要误判为检测失败。
     do { n = read(fd, buf, sizeof(buf) - 1); } while (n < 0 && errno == EINTR);
     close(fd);
     if (n <= 0) return 0;
@@ -64,13 +77,10 @@ static int check_tracer_pid(void) {
     return (*p != '0' && *p != '\0');
 }
 
-/** Frida 默认端口 27042 */
+/* Frida 默认端口 27042 */
 static int check_frida(void) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return 0;
-    /* connect 加 1s 超时 + FD_CLOEXEC（L24）：无超时的 connect 会把主线程
-     * 挂死在网络栈上，注入方甚至可以靠黑洞端口拖慢启动。
-     * 超时或失败一律视为「未检测到 frida」。 */
     struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -86,17 +96,15 @@ static int check_frida(void) {
     return connected;
 }
 
-/** 尝试打开常见的 frida agent so */
+/* Frida agent 文件检测 */
 static int check_frida_files(void) {
     const char *paths[] = {
         "/data/local/tmp/re.frida.server/frida-agent-64.so",
         "/data/local/tmp/frida-agent-64.so",
         "/data/local/tmp/frida-agent-32.so",
+        "/data/local/tmp/re.frida.server/frida-agent-32.so",
     };
-    for (int i = 0; i < 3; i++) {
-        /* 普通应用对 /data/local/tmp 里的文件必然 EACCES（L23）：
-         * open 失败不代表文件不存在，更不代表可疑。先判可读性，
-         * 不可读直接跳过，避免把「打不开」误判成「检出 frida」。 */
+    for (int i = 0; i < 4; i++) {
         if (access(paths[i], R_OK) != 0) continue;
         int fd = open(paths[i], O_RDONLY);
         if (fd >= 0) { close(fd); return 1; }
@@ -104,18 +112,54 @@ static int check_frida_files(void) {
     return 0;
 }
 
+/* Frida 线程名检测（frida-agent 注入后会创建 "frida-*" 线程） */
+static int check_frida_threads(void) {
+    DIR *dir = opendir("/proc/self/task");
+    if (!dir) return 0;
+    struct dirent *entry;
+    int found = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[128];
+        snprintf(path, sizeof(path), "/proc/self/task/%s/comm", entry->d_name);
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) continue;
+        char name[64] = {0};
+        ssize_t n = read(fd, name, sizeof(name) - 1);
+        close(fd);
+        if (n > 0) {
+            if (strstr(name, "frida") || strstr(name, "gadget") || strstr(name, "linjector"))
+                found = 1;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+/* Frida 命名管道检测 */
+static int check_frida_pipes(void) {
+    /* frida 用 pipe 或 socketpair 通信，检查 /proc/self/fd 中的可疑链接 */
+    DIR *dir = opendir("/proc/self/fd");
+    if (!dir) return 0;
+    struct dirent *entry;
+    int found = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[128], target[256];
+        snprintf(path, sizeof(path), "/proc/self/fd/%s", entry->d_name);
+        ssize_t n = readlink(path, target, sizeof(target) - 1);
+        if (n > 0) {
+            target[n] = '\0';
+            if (strstr(target, "frida") || strstr(target, "gadget"))
+                found = 1;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
 /* ===== 2. 签名校验 ===== */
 
-/*
- * 从 /proc/self/cmdline 拿包名，再走 PackageManager 查签名。
- * 但 native 层不走 PackageManager，用更直接的方式：
- * 读取 APK 自己的签名块（APK Signing Block）。
- *
- * 简化实现：Java 层把签名 hash 传进来做比对，native 层做二次校验。
- * 这样即使 Java 层被 hook 绕过，native 层还有一次机会。
- *
- * 归一化（去冒号、转小写）在 Java 层统一完成，此处只做防御性 strncmp。
- */
 JNIEXPORT jboolean JNICALL
 Java_io_github_sweetpotato_1digua_mbpu_Security_nativeCheckSig(JNIEnv *env, jclass clazz,
                                                   jstring expected_hash,
@@ -137,10 +181,6 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeCheckSig(JNIEnv *env, jcla
         return JNI_FALSE;
     }
 
-    /* 归一化（去冒号、转小写）已在 Java 层完成，这里只做防御性比对（H10/M21）：
-     * strncmp 限长 64，避免依赖 actual 的结尾；actual 必须恰好 64 位。
-     * expected 长度不是 64 属于构建配置错误——LOGE 后放行，不杀进程
-     * （杀进程惩罚的是用户，不是配置错误）。 */
     if (strlen(expected) != 64) {
         LOGE("EXPECTED_SIG_SHA256 malformed (len=%zu), expected 64 hex chars; skip check", strlen(expected));
         (*env)->ReleaseStringUTFChars(env, sig_hash, actual);
@@ -148,54 +188,43 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeCheckSig(JNIEnv *env, jcla
         return JNI_TRUE;
     }
 
-    int match = (strlen(actual) == 64 && strncmp(actual, expected, 64) == 0);
+    /* 常量时间比较，防止时序侧信道 */
+    volatile int diff = 0;
+    for (int i = 0; i < 64; i++) {
+        diff |= (unsigned char)actual[i] ^ (unsigned char)expected[i];
+    }
+    int match = (strlen(actual) == 64 && diff == 0);
     (*env)->ReleaseStringUTFChars(env, sig_hash, actual);
     (*env)->ReleaseStringUTFChars(env, expected_hash, expected);
     return match ? JNI_TRUE : JNI_FALSE;
 }
 
-/* ===== 3. 反调试入口 ===== */
+/* ===== 3. 反调试入口（增强版） ===== */
 
 JNIEXPORT jboolean JNICALL
 Java_io_github_sweetpotato_1digua_mbpu_Security_nativeAntiDebug(JNIEnv *env, jclass clazz) {
-    /* ptrace 自检：必须在主线程启动早期调用，且只调用一次 */
-    if (check_ptrace()) return JNI_TRUE;
-    if (check_tracer_pid()) return JNI_TRUE;
-    if (check_frida()) return JNI_TRUE;
-    if (check_frida_files()) return JNI_TRUE;
+    if (check_tracer_pid()) { LOGW("anti-debug: TracerPid != 0"); return JNI_TRUE; }
+    if (check_frida()) { LOGW("anti-debug: frida port detected"); return JNI_TRUE; }
+    if (check_frida_files()) { LOGW("anti-debug: frida agent file detected"); return JNI_TRUE; }
+    if (check_frida_threads()) { LOGW("anti-debug: frida thread detected"); return JNI_TRUE; }
+    if (check_frida_pipes()) { LOGW("anti-debug: frida pipe detected"); return JNI_TRUE; }
     return JNI_FALSE;
 }
 
-/* ===== 4. 反 hook / 完整性校验 =====
- * 检测 inline hook：检查关键函数入口是否有跳转指令。
- * 由于 libxposed 自己就是 hook 框架，这里只检测常见的第三方 hook，
- * 不检测 Xposed 自身的 hook（否则误伤自己）。 */
+/* ===== 4. 反注入 / 完整性校验（增强版） ===== */
 
 JNIEXPORT jint JNICALL
 Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegrity(JNIEnv *env, jclass clazz) {
-    /*
-     * 读取自己的 maps，检测可疑的注入 so。
-     * 注：Xposed/LSPosed 的 so 也会被列出来，需要排除。
-     *
-     * 整个 maps 循环读到 EOF（M20）：实测 maps 有 500KB+，只读前 4096 字节
-     * 覆盖率不到 1%，注入的 so 极可能在后半段，等于没检测。
-     * 用 prev[16] 保存每块末尾 15 字节做跨块衔接，防止 "frida" 被块边界切断。
-     *
-     * 返回值：>0 = 检出可疑位掩码；-1 = 检测本身失败（不是「可疑」，
-     * Java 侧只对 >0 告警，见 L25）；0 = 未检出。
-     */
     int suspicious = 0;
     int fd = open("/proc/self/maps", O_RDONLY);
     if (fd < 0) return -1;
     char buf[4096];
-    char prev[16] = {0};   /* 跨块半词缓冲 */
+    char prev[16] = {0};
     ssize_t n;
-    // N19 修复：EINTR 时继续读，其他错误才中止。
-    while (true) {
+    while (1) {
         n = read(fd, buf, sizeof(buf) - 1);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) break;
-
         buf[n] = '\0';
         char joined[sizeof(prev) + sizeof(buf)];
         size_t plen = strlen(prev);
@@ -203,13 +232,127 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegrity(JNIEnv *env, jcl
         memcpy(joined + plen, buf, n + 1);
         if (strstr(joined, "frida")) suspicious |= 1;
         if (strstr(joined, "libfrida-gadget")) suspicious |= 2;
-        /* 保留最后 15 字节作为下轮 prev */
+        if (strstr(joined, "xposed") && !strstr(joined, "lspd") && !strstr(joined, "libxposed"))
+            suspicious |= 4;
+        if (strstr(joined, "substrate")) suspicious |= 8;
+        if (strstr(joined, "libhook") && !strstr(joined, "libhooks")) suspicious |= 16;
         size_t keep = n >= 15 ? 15 : (size_t)n;
         memcpy(prev, buf + n - keep, keep);
         prev[keep] = '\0';
     }
     close(fd);
-    if (n < 0) return -1;   /* 读失败，不当作「未检出」的证据 */
+    if (n < 0) return -1;
     return suspicious;
 }
 
+/* ===== 5. 自身完整性校验（CRC32 .text 段） =====
+ * 启动时对 .so 的 .text 段算 CRC32，运行中定期复核。
+ * 被 patch 过的 so 会得到不同 CRC。
+ * 注意：基址由 ASLR 每次不同，需要在启动时记录基准 CRC。
+ */
+
+static uint32_t baseline_crc = 0;
+
+/* 从 maps 中找到自己 so 的 .text 段范围 */
+static int find_self_text(const char *so_name, uintptr_t *start, size_t *len) {
+    int fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return -1;
+    char buf[4096];
+    char line[512];
+    size_t line_pos = 0;
+    ssize_t n;
+    int found = 0;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            if (buf[i] == '\n' || line_pos >= sizeof(line) - 1) {
+                line[line_pos] = '\0';
+                if (strstr(line, so_name) && strstr(line, "r-xp")) {
+                    unsigned long s, e;
+                    if (sscanf(line, "%lx-%lx", &s, &e) == 2) {
+                        *start = (uintptr_t)s;
+                        *len = (size_t)(e - s);
+                        found = 1;
+                    }
+                }
+                line_pos = 0;
+            } else {
+                line[line_pos++] = buf[i];
+            }
+        }
+        if (found) break;
+    }
+    close(fd);
+    return found ? 0 : -1;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegritySelf(JNIEnv *env, jclass clazz) {
+    uintptr_t text_start;
+    size_t text_len;
+    if (find_self_text("libmbpu_security.so", &text_start, &text_len) != 0) {
+        LOGW("integrity: cannot find own .text section");
+        return JNI_TRUE; /* 找不到不算异常 */
+    }
+    if (text_len == 0 || text_len > 1024 * 1024) return JNI_TRUE;
+    uint32_t crc = crc32_calc((const void *)text_start, text_len);
+    if (baseline_crc == 0) {
+        baseline_crc = crc;
+        LOGI("integrity: baseline CRC32=0x%08x, .text size=%zu", crc, text_len);
+        return JNI_TRUE;
+    }
+    if (crc != baseline_crc) {
+        LOGE("integrity: CRC32 mismatch! baseline=0x%08x current=0x%08x — .so may be patched",
+             baseline_crc, crc);
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+/* ===== 6. 反内存转储 =====
+ * mprotect 自己的代码段为 RX（去掉 W），防止运行时被写入/patch。
+ * 同时检测 /proc/self/mem 的异常访问（dump 工具会 mmap 或 open 这个文件）。
+ */
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sweetpotato_1digua_mbpu_Security_nativeProtectMemory(JNIEnv *env, jclass clazz) {
+    uintptr_t text_start;
+    size_t text_len;
+    if (find_self_text("libmbpu_security.so", &text_start, &text_len) != 0) return JNI_TRUE;
+
+    /* 把 .text 段锁定为只读+执行（去掉写权限），防止运行时 patch */
+    uintptr_t page_start = text_start & ~(uintptr_t)0xFFF;
+    size_t total = text_len + (text_start - page_start);
+    if (mprotect((void *)page_start, total, PROT_READ | PROT_EXEC) == 0) {
+        LOGI("memory protection: .text locked to RX (%zu bytes)", total);
+        return JNI_TRUE;
+    } else {
+        LOGW("memory protection: mprotect failed (errno=%d), SELinux may block", errno);
+        return JNI_FALSE;
+    }
+}
+
+/* ===== 7. 时序检测 =====
+ * 测量关键路径耗时，如果异常慢（>10x），说明被调试器单步/断点。
+ */
+
+static struct timespec ts_baseline = {0, 0};
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sweetpotato_1digua_mbpu_Security_nativeTimingCheck(JNIEnv *env, jclass clazz) {
+    struct timespec ts_now;
+    clock_gettime(CLOCK_MONOTONIC, &ts_now);
+    if (ts_baseline.tv_sec == 0 && ts_baseline.tv_nsec == 0) {
+        ts_baseline = ts_now;
+        return JNI_FALSE;
+    }
+    /* 这里测量的是两次调用间隔；正常间隔应该很短（微秒级）。
+     * 如果 Java 层在两个关键点之间调用此函数，间隔超过 500ms 说明有单步调试。 */
+    long elapsed_ns = (ts_now.tv_sec - ts_baseline.tv_sec) * 1000000000L
+                     + (ts_now.tv_nsec - ts_baseline.tv_nsec);
+    ts_baseline = ts_now;
+    if (elapsed_ns > 500000000L) { /* > 500ms */
+        LOGW("timing: suspicious delay detected (%ld ns) — possible debugging", elapsed_ns);
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
+}

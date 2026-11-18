@@ -121,7 +121,7 @@
     <string name="search_history_remove">長押しでこの履歴を削除</string>
     <string name="about_changelog_section">更新履歴</string>
     <string name="about_changelog_title">%1$s の更新内容：</string>
-    <string name="about_changelog_body">既知の問題をいくつか修正しました。</string>
+    <string name="about_changelog_body">新規：設定JSONのバックアップと復元。全アプリの権限ブロック設定をエクスポート/インポートできます。\n新規：ブロック統計。診断ページでアプリごとのAPIブロック呼び出し回数ランキングを表示。\nいくつかの既知の問題を修正しました。</string>
     <string name="debug_export_log_downloads">ログをダウンロードにエクスポート</string>
     <string name="debug_export_log_custom">ログをカスタムフォルダーにエクスポート</string>
 </resources>

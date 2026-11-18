@@ -51,6 +51,15 @@ public final class Security {
     /** 反注入检测：返回可疑标记位 */
     private static native int nativeIntegrity();
 
+    /** 自身完整性校验：CRC32 比对 .text 段，返回 false 表示 so 被 patch */
+    private static native boolean nativeIntegritySelf();
+
+    /** 反内存转储：mprotect .text 段为 RX，防止运行时写入 */
+    private static native boolean nativeProtectMemory();
+
+    /** 时序检测：关键路径耗时异常返回 true（被调试器单步） */
+    private static native boolean nativeTimingCheck();
+
     /* ===== 签名 hash 归一化（与 ModuleIntegrity 保持同一规则） ===== */
 
     /**
@@ -152,6 +161,14 @@ public final class Security {
         //    HyperOS 的 SELinux 会误伤 ptrace 检测（avc denied），
         //    root 设备上 KernelSU/Magisk 也可能触发误判。
         //    杀进程会导致正常用户闪退。
+        // 自身完整性：CRC32 校验 .text 段
+        if (!nativeIntegritySelf()) {
+            android.util.Log.e("MBPU_SEC", "self-integrity check failed — .so may be patched");
+        }
+        // 反内存转储：锁定代码段
+        nativeProtectMemory();
+        // 时序基线
+        nativeTimingCheck();
         if (nativeAntiDebug()) {
             android.util.Log.w("MBPU_SEC", "anti-debug detected (logged only)");
         }

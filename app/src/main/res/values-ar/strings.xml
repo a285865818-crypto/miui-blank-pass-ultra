@@ -121,7 +121,7 @@
     <string name="search_history_remove">اضغط مطوّلًا لحذف هذا العنصر</string>
     <string name="about_changelog_section">سجل التغييرات</string>
     <string name="about_changelog_title">تغييرات %1$s:</string>
-    <string name="about_changelog_body">تم إصلاح بعض المشكلات المعروفة.</string>
+    <string name="about_changelog_body">جديد: النسخ الاحتياطي واستعادة إعدادات JSON. تصدير/استيراد إعدادات اعتراض الأذونات لجميع التطبيقات.\nجديد: إحصائيات الاعتراض. ترتيب نداءات API المعترضة لكل تطبيق في التشخيص.\nتم إصلاح بعض المشكلات المعروفة.</string>
     <string name="debug_export_log_downloads">تصدير السجل إلى التنزيلات</string>
     <string name="debug_export_log_custom">تصدير السجل إلى مجلد مخصص</string>
 </resources>

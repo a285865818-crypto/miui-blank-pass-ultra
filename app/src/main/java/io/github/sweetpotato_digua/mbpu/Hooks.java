@@ -45,6 +45,7 @@ final class Hooks {
         this.pkg = pkg;
         this.mask = mask;
         this.cl = cl;
+        BlockStats.configure(module, pkg);
     }
 
     int okCount() {
@@ -412,6 +413,52 @@ final class Hooks {
         return false;
     }
 
+    /** 仅在已确认命中后解析类别；未命中的正常调用没有额外统计开销。 */
+    private void recordResolver(Uri uri) {
+        if (uri == null) return;
+        String authority;
+        try {
+            authority = uri.getAuthority();
+        } catch (Throwable ignored) {
+            return;
+        }
+        recordResolver(authority);
+    }
+
+    private void recordResolver(String authority) {
+        if (authority == null) return;
+        String a = authority.toLowerCase(Locale.ROOT);
+        if (Config.has(mask, Config.CONTACTS) && authorityMatches(a,
+                "com.android.contacts", "contacts", "com.android.providers.contacts")) {
+            BlockStats.record(Config.CONTACTS);
+        } else if (Config.has(mask, Config.SMS) && authorityMatches(a,
+                "sms", "mms", "mms-sms", "com.android.providers.telephony")) {
+            BlockStats.record(Config.SMS);
+        } else if (Config.has(mask, Config.CALLS) && authorityMatches(a,
+                "call_log", "calls", "com.android.calllogbackup")) {
+            BlockStats.record(Config.CALLS);
+        } else if (Config.has(mask, Config.CALENDAR) && authorityMatches(a,
+                "com.android.calendar", "calendar")) {
+            BlockStats.record(Config.CALENDAR);
+        } else if (Config.has(mask, Config.MEDIA) && authorityMatches(a,
+                "media", "com.android.providers.media", "com.google.android.apps.photos.contentprovider")) {
+            BlockStats.record(Config.MEDIA);
+        } else if (Config.has(mask, Config.FILES) && authorityMatches(a,
+                "downloads", "com.android.providers.downloads", "com.android.shell")) {
+            BlockStats.record(Config.FILES);
+        } else if (Config.has(mask, Config.STORAGE)
+                && authorityMatches(a, "com.android.externalstorage")) {
+            BlockStats.record(Config.STORAGE);
+        }
+    }
+
+    private static boolean authorityMatches(String authority, String... prefixes) {
+        for (String prefix : prefixes) {
+            if (authority.equals(prefix) || authority.startsWith(prefix + ".")) return true;
+        }
+        return false;
+    }
+
     private void installResolver() {
         final String[] authorities = resolverPrefixes();
         if (authorities.length == 0) return;
@@ -431,6 +478,7 @@ final class Hooks {
                         if (!blockedAuthority((String) chain.getArg(0), authorities)) {
                             return chain.proceed();
                         }
+                        recordResolver((String) chain.getArg(0));
                         return emptyBatchResult(chain.getArgs());
                     }, true);
                     continue;
@@ -438,27 +486,41 @@ final class Hooks {
                 // call(String authority, String method, String arg, Bundle extras)：
                 // 与 applyBatch 同类，首参是 authority 不是 Uri，必须在 Uri 过滤前拦。
                 if (m.getName().equals("call") && pt[0] == String.class) {
-                    hook(m, chain -> blockedAuthority((String) chain.getArg(0), authorities)
-                            ? new android.os.Bundle() : chain.proceed());
+                    hook(m, chain -> {
+                        if (!blockedAuthority((String) chain.getArg(0), authorities)) {
+                            return chain.proceed();
+                        }
+                        recordResolver((String) chain.getArg(0));
+                        return new android.os.Bundle();
+                    });
                     continue;
                 }
                 if (pt[0] != Uri.class) continue;
                 switch (m.getName()) {
                     case "query":
-                        hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? emptyCursor(chain.getArgs()) : chain.proceed());
+                        hook(m, chain -> {
+                            if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                            recordResolver((Uri) chain.getArg(0));
+                            return emptyCursor(chain.getArgs());
+                        });
                         break;
                     case "insert":
                         // H2 修复：之前返回 null，调用方 ContentUris.parseId(res.uri) 立刻 NPE。
                         // 与 emptyBatchResult 一致，返回 URI 形态。
-                        hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? blockedInsertUri() : chain.proceed());
+                        hook(m, chain -> {
+                            if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                            recordResolver((Uri) chain.getArg(0));
+                            return blockedInsertUri();
+                        });
                         break;
                     case "update":
                     case "delete":
                     case "bulkInsert":
-                        hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? 0 : chain.proceed());
+                        hook(m, chain -> {
+                            if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                            recordResolver((Uri) chain.getArg(0));
+                            return 0;
+                        });
                         break;
                     case "openInputStream":
                     case "openOutputStream":
@@ -470,6 +532,7 @@ final class Hooks {
                         hook(m, chain -> {
                             Uri u = (Uri) chain.getArg(0);
                             if (blocked(u, authorities)) {
+                                recordResolver(u);
                                 throw new java.io.FileNotFoundException("blocked by MBPU: " + u);
                             }
                             return chain.proceed();
@@ -480,6 +543,9 @@ final class Hooks {
                     case "openTypedAssetFileDescriptor":
                     case "openTypedAssetFile":
                         hook(m, chain -> {
+                            if (blocked((Uri) chain.getArg(0), authorities)) {
+                                recordResolver((Uri) chain.getArg(0));
+                            }
                             failIfBlocked((Uri) chain.getArg(0), authorities);
                             return chain.proceed();
                         }, true);
@@ -487,22 +553,32 @@ final class Hooks {
                     case "loadThumbnail":
                         hook(m, chain -> {
                             if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                            recordResolver((Uri) chain.getArg(0));
                             throw new java.io.IOException("blocked by PermNull");
                         }, true);
                         break;
                     case "call":
-                        hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? null : chain.proceed());
+                        hook(m, chain -> {
+                            if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                            recordResolver((Uri) chain.getArg(0));
+                            return null;
+                        });
                         break;
                     case "openFile":
                         hook(m, chain -> {
+                            if (blocked((Uri) chain.getArg(0), authorities)) {
+                                recordResolver((Uri) chain.getArg(0));
+                            }
                             failIfBlocked((Uri) chain.getArg(0), authorities);
                             return chain.proceed();
                         }, true);
                         break;
                     case "getStreamTypes":
-                        hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                                ? new String[0] : chain.proceed());
+                        hook(m, chain -> {
+                            if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                            recordResolver((Uri) chain.getArg(0));
+                            return new String[0];
+                        });
                         break;
                     default:
                         break;
@@ -600,8 +676,13 @@ final class Hooks {
             // 当成 authority 会既拦不住受保护 provider，又可能误伤无关 provider。
             if (m.getName().equals("call") && pt[0] == String.class) {
                 if (pt.length >= 4 && pt[1] == String.class && pt[2] == String.class) {
-                    hook(m, chain -> blockedAuthority((String) chain.getArg(0), authorities)
-                            ? new android.os.Bundle() : chain.proceed());
+                    hook(m, chain -> {
+                        if (!blockedAuthority((String) chain.getArg(0), authorities)) {
+                            return chain.proceed();
+                        }
+                        recordResolver((String) chain.getArg(0));
+                        return new android.os.Bundle();
+                    });
                 }
                 continue;
             }
@@ -613,6 +694,7 @@ final class Hooks {
                         if (!blockedAuthority((String) chain.getArg(0), authorities)) {
                             return chain.proceed();
                         }
+                        recordResolver((String) chain.getArg(0));
                         return emptyBatchResult(chain.getArgs());
                     }, true);
                 } else {
@@ -621,10 +703,39 @@ final class Hooks {
                     // 其余操作交给系统。原实现无条件返回空数组，会把目标应用对自己
                     // 私有 provider 的批量写入也一起静默吞掉。
                     hook(m, chain -> {
-                        Object filtered = filterBatchByUri(chain.getArgs(), authorities);
-                        // null 表示没有命中屏蔽范围，必须显式走原调用，
-                        // 不能把 null 当作返回值（那等于吞掉整个批量操作）。
-                        return filtered != null ? filtered : chain.proceed();
+                        Object filtered;
+                        try {
+                            filtered = filterBatchByUri(chain.getArgs(), authorities);
+                        } catch (Throwable batchErr) {
+                            // 混合批次抛 OperationApplicationException 也是真实拦截，rethrow 前补记。
+                            for (Object arg : chain.getArgs()) {
+                                if (!(arg instanceof java.util.List)) continue;
+                                for (Object op : (java.util.List<?>) arg) {
+                                    if (!(op instanceof android.content.ContentProviderOperation)) continue;
+                                    Uri uri = ((android.content.ContentProviderOperation) op).getUri();
+                                    if (blocked(uri, authorities)) {
+                                        recordResolver(uri);
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                            throw batchErr;
+                        }
+                        if (filtered == null) return chain.proceed();
+                        for (Object arg : chain.getArgs()) {
+                            if (!(arg instanceof java.util.List)) continue;
+                            for (Object op : (java.util.List<?>) arg) {
+                                if (!(op instanceof android.content.ContentProviderOperation)) continue;
+                                Uri uri = ((android.content.ContentProviderOperation) op).getUri();
+                                if (blocked(uri, authorities)) {
+                                    recordResolver(uri);
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                        return filtered;
                     }, true);   // R1：混合批次抛的异常必须穿透给调用方
                 }
                 continue;
@@ -632,32 +743,47 @@ final class Hooks {
             if (pt[0] != Uri.class) continue;
             switch (m.getName()) {
                 case "query":
-                    hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                            ? emptyCursor(chain.getArgs()) : chain.proceed());
+                    hook(m, chain -> {
+                        if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                        recordResolver((Uri) chain.getArg(0));
+                        return emptyCursor(chain.getArgs());
+                    });
                     break;
                 case "insert":
                     // H2 修复（第二处）：同上，返回 URI 形态避免 NPE。
-                    hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                            ? blockedInsertUri() : chain.proceed());
+                    hook(m, chain -> {
+                        if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                        recordResolver((Uri) chain.getArg(0));
+                        return blockedInsertUri();
+                    });
                     break;
                 case "update":
                 case "delete":
                 case "bulkInsert":
-                    hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                            ? 0 : chain.proceed());
+                    hook(m, chain -> {
+                        if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                        recordResolver((Uri) chain.getArg(0));
+                        return 0;
+                    });
                     break;
                 case "openFile":
                 case "openAssetFile":
                 case "openTypedAssetFile":
                 case "openTypedAssetFileDescriptor":
                     hook(m, chain -> {
+                        if (blocked((Uri) chain.getArg(0), authorities)) {
+                            recordResolver((Uri) chain.getArg(0));
+                        }
                         failIfBlocked((Uri) chain.getArg(0), authorities);
                         return chain.proceed();
                     }, true);
                     break;
                 case "getStreamTypes":
-                    hook(m, chain -> blocked((Uri) chain.getArg(0), authorities)
-                            ? new String[0] : chain.proceed());
+                    hook(m, chain -> {
+                        if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
+                        recordResolver((Uri) chain.getArg(0));
+                        return new String[0];
+                    });
                     break;
                 default:
                     break;
@@ -684,19 +810,33 @@ final class Hooks {
             String n = m.getName();
             if (n.equals("getLastKnownLocation")) {
                 if (m.getReturnType() == Location.class) {
-                    hook(m, chain -> null);
+                    hook(m, chain -> {
+                        BlockStats.record(Config.LOCATION);
+                        return null;
+                    });
                 }
             } else if (n.equals("requestLocationUpdates") || n.equals("requestSingleUpdate")
                     || n.equals("getCurrentLocation")) {
-                hook(m, chain -> null);
+                hook(m, chain -> {
+                    BlockStats.record(Config.LOCATION);
+                    return null;
+                });
             } else if (n.equals("isProviderEnabled")) {
                 // H4 补充：让应用判断「有无可用定位 provider」时得到「无」。
                 // 注意：GMS FusedLocationProviderClient 走 Binder 直连 GMS Core，
                 // 不在本进程内，本模块不拦截——这是有意的行为边界。
-                if (m.getReturnType() == boolean.class) hook(m, chain -> false);
+                if (m.getReturnType() == boolean.class) {
+                    hook(m, chain -> {
+                        BlockStats.record(Config.LOCATION);
+                        return false;
+                    });
+                }
             } else if (n.equals("getProviders")) {
                 if (List.class.isAssignableFrom(m.getReturnType())) {
-                    hook(m, chain -> new java.util.ArrayList<String>());
+                    hook(m, chain -> {
+                        BlockStats.record(Config.LOCATION);
+                        return new java.util.ArrayList<String>();
+                    });
                 }
             }
         }
@@ -726,14 +866,20 @@ final class Hooks {
                     || n.equals("sendMultimediaMessage")
                     || n.equals("sendMultimediaMessageWithoutPersisting")
                     || n.equals("sendDataMessage")) {
-                hook(m, chain -> null);   // no-op：不抛异常，避免崩宿主
+                hook(m, chain -> {
+                    BlockStats.record(Config.SMS);
+                    return null;       // no-op：不抛异常，避免崩宿主
+                });
             }
             // N4 修复：SmsManager 的 ICC 读取接口完全没拦，能绕过 ContentResolver
             // 空结果直接读 SIM 卡短信。这些查询返回 List<SmsMessage>，给空列表。
             if (n.equals("getMessagesFromIcc") || n.equals("getAllMessagesFromIcc")
                     || n.equals("getSmsMessagesForFinancialApp")) {
                 if (List.class.isAssignableFrom(m.getReturnType())) {
-                    hook(m, chain -> new java.util.ArrayList<>());
+                    hook(m, chain -> {
+                        BlockStats.record(Config.SMS);
+                        return new java.util.ArrayList<>();
+                    });
                 }
             }
         }
@@ -750,9 +896,15 @@ final class Hooks {
             String n = m.getName();
             if (n.equals("getPrimaryClip") || n.equals("getPrimaryClipDescription")
                     || n.equals("getText")) {
-                hook(m, chain -> null);
+                hook(m, chain -> {
+                    BlockStats.record(Config.CLIPBOARD);
+                    return null;
+                });
             } else if (n.equals("hasPrimaryClip")) {
-                hook(m, chain -> false);
+                hook(m, chain -> {
+                    BlockStats.record(Config.CLIPBOARD);
+                    return false;
+                });
             }
         }
         log("clipboard hooks installed");
@@ -770,7 +922,10 @@ final class Hooks {
                 if (n.equals("getDeviceId") || n.equals("getImei") || n.equals("getMeid")
                         || n.equals("getSubscriberId") || n.equals("getSimSerialNumber")
                         || n.equals("getLine1Number") || n.equals("getIccId")) {
-                    hook(m, chain -> "");
+                    hook(m, chain -> {
+                        BlockStats.record(Config.IDENT);
+                        return "";
+                    });
                 }
             }
         }
@@ -781,13 +936,17 @@ final class Hooks {
         hook(getString, chain -> {
             Object k = chain.getArg(1);
             if ("android_id".equals(k) || "advertising_id".equals(k)) {
+                BlockStats.record(Config.IDENT);
                 return "0000000000000000";
             }
             return chain.proceed();
         });
 
         Class<?> build = load("android.os.Build");
-        hook(find(build, "getSerial"), chain -> "unknown");
+        hook(find(build, "getSerial"), chain -> {
+            BlockStats.record(Config.IDENT);
+            return "unknown";
+        });
 
         log("identifier hooks installed");
     }
@@ -827,6 +986,7 @@ final class Hooks {
                     }
                     // 自身包名放行，其余一律「未安装」（应用已有处理路径）
                     if (target != null && !target.equals(pkg)) {
+                        BlockStats.record(Config.APPS);
                         if (isLaunchQuery) return null;   // Intent 查询返回 null 是合法语义
                         throw new android.content.pm.PackageManager.NameNotFoundException(target);
                     }
@@ -851,7 +1011,10 @@ final class Hooks {
             }
             if (!listing && !querying) continue;
             if (!List.class.isAssignableFrom(m.getReturnType())) continue;
-            hook(m, chain -> new java.util.ArrayList<>());
+            hook(m, chain -> {
+                BlockStats.record(Config.APPS);
+                return new java.util.ArrayList<>();
+            });
         }
         log("installed-app hooks installed");
     }
@@ -889,13 +1052,17 @@ final class Hooks {
                             }
                         });
                     }
+                    BlockStats.record(Config.ACCOUNTS);
                     return null;   // 不真正注册，阻断后续回调
                 });
                 continue;
             }
             // removeOnAccountsUpdatedListener 不需要拦：没注册过，系统自然找不到。
             if (m.getReturnType() == Account[].class) {
-                hook(m, chain -> new Account[0]);
+                hook(m, chain -> {
+                    BlockStats.record(Config.ACCOUNTS);
+                    return new Account[0];
+                });
             } else if (m.getReturnType() == android.accounts.AccountManagerFuture.class) {
                 // 只拦真正返回 Account[] 的方法。
                 // AccountManagerFuture<T> 的 getResult() 会被调用方转成 T：
@@ -908,6 +1075,7 @@ final class Hooks {
                     // M5 修复：原实现只返回 Future 不投递 callback，用 callback 风格
                     // 调用的应用会永久卡在 loading。补投递（参数顺序：type, features, callback, handler）。
                     hook(m, chain -> {
+                        BlockStats.record(Config.ACCOUNTS);
                         Object f = emptyAccountFuture();
                         deliverAccountCallback(chain, f);
                         return f;
@@ -915,6 +1083,7 @@ final class Hooks {
                 } else if (m.getName().equals("hasFeatures")) {
                     // 没有任何账户 => 不存在任何 feature。
                     hook(m, chain -> {
+                        BlockStats.record(Config.ACCOUNTS);
                         Object f = completedFuture(Boolean.FALSE);
                         deliverAccountCallback(chain, f);
                         return f;
@@ -926,7 +1095,10 @@ final class Hooks {
                 }
             } else if (java.util.Map.class.isAssignableFrom(m.getReturnType())
                     && m.getName().contains("Visibility")) {
-                hook(m, chain -> new java.util.HashMap<>());
+                hook(m, chain -> {
+                    BlockStats.record(Config.ACCOUNTS);
+                    return new java.util.HashMap<>();
+                });
             }
         }
         log("account hooks installed");
@@ -1024,6 +1196,7 @@ final class Hooks {
                     }
                     byte silence = ((android.media.AudioRecord) chain.getThisObject()).getAudioFormat()
                             == android.media.AudioFormat.ENCODING_PCM_8BIT ? (byte) 0x80 : 0;
+                    BlockStats.record(Config.MIC);
                     Arrays.fill(buf, off, off + size, silence);
                     return size;
                 });
@@ -1037,6 +1210,7 @@ final class Hooks {
                     if (buf == null || off < 0 || size < 0 || off > buf.length - size) {
                         return android.media.AudioRecord.ERROR_BAD_VALUE;
                     }
+                    BlockStats.record(Config.MIC);
                     Arrays.fill(buf, off, off + size, (short) 0);
                     return size;
                 });
@@ -1053,6 +1227,7 @@ final class Hooks {
                     if (buf == null || off < 0 || size < 0 || off > buf.length - size) {
                         return android.media.AudioRecord.ERROR_BAD_VALUE;
                     }
+                    BlockStats.record(Config.MIC);
                     Arrays.fill(buf, off, off + size, 0f);
                     return size;
                 });
@@ -1070,6 +1245,7 @@ final class Hooks {
                     }
                     byte silence = ((android.media.AudioRecord) chain.getThisObject()).getAudioFormat()
                             == android.media.AudioFormat.ENCODING_PCM_8BIT ? (byte) 0x80 : 0;
+                    BlockStats.record(Config.MIC);
                     int start = buf.position();
                     int end = start + size;
                     // L5 修复：原逐字节 put 在高频音频回调下开销可观，改为 bulk 填充。
@@ -1118,6 +1294,7 @@ final class Hooks {
             if (!Modifier.isPublic(m.getModifiers())) continue;
             if (!m.getName().equals("openCamera")) continue;
             hook(m, chain -> {
+                BlockStats.record(Config.CAMERA);
                 throw new CameraAccessException(CameraAccessException.CAMERA_DISABLED,
                         "camera disabled by PermNull");
             }, true);
@@ -1135,6 +1312,7 @@ final class Hooks {
                 if (!m.getName().equals("open") && !m.getName().equals("openLegacy")) continue;
                 if (m.getReturnType() != old) continue;
                 hook(m, chain -> {
+                    BlockStats.record(Config.CAMERA);
                     throw new RuntimeException("Fail to connect to camera service");
                 }, true);
             }

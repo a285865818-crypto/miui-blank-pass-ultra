@@ -35,6 +35,7 @@ public final class Store {
     private static final String KEY_CHANGED_AT = "changed_at_";
     private static final int MAX_SEARCH_HISTORY = 10;
     private static final String KEY_DIRTY_CONFIG = "dirty_config";
+    private static final String KEY_PENDING_RECONCILE = "pending_reconcile";
 
     private static final ExecutorService SYNC_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "MBPU-config-sync");
@@ -112,6 +113,32 @@ public final class Store {
         Map<String, ?> localValues;
         Set<String> dirty;
         try {
+            // 上次 replaceConfigs 时 remote 不可读，需补删 remote-only 的 cfg 键。
+            boolean reconcile;
+            synchronized (lock) {
+                reconcile = local.getBoolean(KEY_PENDING_RECONCILE, false);
+            }
+            if (reconcile) {
+                try {
+                    Map<String, ?> remoteAll = prefs.getAll();
+                    synchronized (lock) {
+                        Set<String> localKeys = new HashSet<>();
+                        for (String key : local.getAll().keySet()) {
+                            if (isConfigKey(key)) localKeys.add(key);
+                        }
+                        Set<String> dirtyNow = dirtyConfigsLocked();
+                        for (String key : remoteAll.keySet()) {
+                            if (isConfigKey(key) && !localKeys.contains(key)) {
+                                dirtyNow.add(key); // tombstone：本地没有但 remote 有 → 删
+                            }
+                        }
+                        local.edit().putStringSet(KEY_DIRTY_CONFIG, dirtyNow)
+                                .remove(KEY_PENDING_RECONCILE).apply();
+                    }
+                } catch (Throwable ignored) {
+                    // 仍然不可读，保留标记下次再试。
+                }
+            }
             synchronized (lock) {
                 // 锁内只做本地读与取引用；prefs.getAll() 是跨进程 IPC，禁止持 lock 调用。
                 // N6 修复：remote 已换代时不能把本次请求静默丢掉。清掉「同步进行中」
@@ -284,6 +311,76 @@ public final class Store {
         return new HashSet<>(snapshot().keySet());
     }
 
+    /**
+     * 用完整备份替换所有每应用配置。
+     * 输入先整体校验，再在一次 SharedPreferences 事务中提交，避免逐应用导入留下半份状态。
+     * 本地与远端旧键都纳入 dirty tombstone，确保同步失败或重连后删除不会丢失。
+     */
+    public void replaceConfigs(Map<String, Integer> configs) {
+        if (configs == null) throw new IllegalArgumentException("null config snapshot");
+        Set<String> newKeys = new HashSet<>();
+        for (Map.Entry<String, Integer> entry : configs.entrySet()) {
+            String pkg = entry.getKey();
+            Integer mask = entry.getValue();
+            if (!isValidPackage(pkg) || mask == null || mask <= 0 || Config.count(mask) == 0) {
+                throw new IllegalArgumentException("invalid config snapshot");
+            }
+            newKeys.add(Config.KEY_PREFIX + pkg);
+        }
+
+        Map<String, ?> before;
+        SharedPreferences r;
+        synchronized (lock) {
+            before = local.getAll();
+            r = remote;
+        }
+        Set<String> oldKeys = new HashSet<>();
+        for (String key : before.keySet()) {
+            if (isConfigKey(key)) oldKeys.add(key);
+        }
+        // RemotePreferences.getAll() 是 Binder IPC，必须在 Store 全局锁外执行。
+        boolean remoteOk = true;
+        if (r != null) {
+            try {
+                for (String key : r.getAll().keySet()) {
+                    if (isConfigKey(key)) oldKeys.add(key);
+                }
+            } catch (Throwable ignored) {
+                // 远端暂不可读：标记需要全量对账，下次 syncRemote 补删 remote-only 键。
+                remoteOk = false;
+            }
+        } else {
+            remoteOk = false;
+        }
+
+        synchronized (lock) {
+            // 最终写锁内重新枚举 local 键：锁外 IPC 期间可能有并发 put() 新增的键。
+            for (String key : local.getAll().keySet()) {
+                if (isConfigKey(key)) oldKeys.add(key);
+            }
+            Set<String> dirty = dirtyConfigsLocked();
+            SharedPreferences.Editor editor = local.edit();
+            long now = System.currentTimeMillis();
+            for (String key : oldKeys) {
+                if (newKeys.contains(key)) continue;
+                editor.remove(key);
+                editor.remove(KEY_CHANGED_AT + key.substring(Config.KEY_PREFIX.length()));
+            }
+            for (Map.Entry<String, Integer> entry : configs.entrySet()) {
+                String pkg = entry.getKey();
+                editor.putString(Config.KEY_PREFIX + pkg, Config.serialize(entry.getValue()));
+                editor.putLong(KEY_CHANGED_AT + pkg, now);
+            }
+            // 不删除旧 dirty：已删除键和 remote-only 键都必须作为 tombstone 同步到 daemon。
+            dirty.addAll(oldKeys);
+            dirty.addAll(newKeys);
+            editor.putStringSet(KEY_DIRTY_CONFIG, dirty);
+            if (!remoteOk) editor.putBoolean(KEY_PENDING_RECONCILE, true);
+            if (!editor.commit()) throw new IllegalStateException("config commit failed");
+        }
+        if (r != null) scheduleSync(r);
+    }
+
     /** 保存配置；mask 为 0 时删除该项。离线变更会在重连后重放。 */
     public void put(String pkg, int mask) {
         if (!validPackage(pkg)) {
@@ -309,6 +406,11 @@ public final class Store {
             r = remote;
         }
         if (r != null) scheduleSync(r);
+    }
+
+    /** 配置备份恢复用：按现有校验规则规范化包名，不放宽存储键格式。 */
+    public static boolean isValidPackage(String pkg) {
+        return validPackage(pkg) && pkg.length() <= 255 && !Config.MODULE_PKG.equals(pkg);
     }
 
     private static boolean validPackage(String pkg) {

@@ -121,7 +121,7 @@
     <string name="search_history_remove">ཟིན་ཐོ་འདི་བསུབ་པར་ཡུན་རིང་མནན་རོགས</string>
     <string name="about_changelog_section">གསར་བཅོས་ཐོ་ཡིག</string>
     <string name="about_changelog_title">%1$s པར་གཞིའི་གསར་བཅོས་ཐོ་ཡིག：</string>
-    <string name="about_changelog_body">ཤེས་ཟིན་གྱི་གནད་དོན་འགའ་ཞིག་སེལ་ཡོད།</string>
+    <string name="about_changelog_body">གསར་པ། JSONརྒྱབ་སྣོན་དང་སླར་གསོ་སྒྲིག་བཀོད་བྱེད་པ་དང་། མཉེན་ཆས་ཚང་མའི་ཆོག་མཆན་བཀག་འགོག་སྒྲིག་བཀོད་ཕྱིར་གཏོང་/ནང་འདྲེན་བྱེད་ཐུབ།\nགསར་པ། བར་ཆད་ཀྱི་རྩིས་དཔྱད། ནད་རྟགས་ཤོག་ངོས་དེས་བཀོལ་སྤྱོད་རེ་རེའི་ཆེད་དུ་APIབར་ཆད་ཀྱི་ཁ་པར་གྱི་གནས་རིམ་སྟོན་གྱི་ཡོད།\nཤེས་རྟོགས་བྱུང་བའི་གནད་དོན་ཁ་ཤས་བཅོས་སྒྲིག་བྱས།</string>
     <string name="debug_export_log_downloads">ཉིན་ཐོ་ཕབ་ལེན་ཁུལ་དུ་ཕྱིར་འདྲེན</string>
     <string name="debug_export_log_custom">ཉིན་ཐོ་རང་གཞན་སྣོད་ཁུལ་དུ་ཕྱིར་འདྲེན</string>
 </resources>

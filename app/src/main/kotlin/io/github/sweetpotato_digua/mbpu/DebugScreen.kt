@@ -210,6 +210,8 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                     bottom = innerPadding.calculateBottomPadding(),
                 ),
         ) {
+            BlockStatsSection()
+
             SmallTitle(
                 text = stringResource(R.string.debug_runtime),
                 insideMargin = PaddingValues(16.dp, 8.dp),

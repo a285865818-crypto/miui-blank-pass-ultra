@@ -153,6 +153,22 @@ fun AppRoot(store: Store, onExit: () -> Unit) {
             Route.Settings -> SettingsScreen(
                 store = store,
                 onBack = { nav.pop() },
+                onConfigRestored = {
+                    // 让仍在进行的旧加载失效；恢复刷新不走 refreshing guard，必须真正启动新加载。
+                    loadGeneration.incrementAndGet()
+                    refreshScope.launch {
+                        try {
+                            loadHome()
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (t: Throwable) {
+                            home.toast = context.getString(
+                                R.string.toast_operation_failed,
+                                t.message ?: t.javaClass.simpleName,
+                            )
+                        }
+                    }
+                },
                 onOpenTheme = { fromRight -> nav.push(Route.Theme, fromRight) },
                 onOpenLanguage = { fromRight -> nav.push(Route.Language, fromRight) },
                 onOpenAbout = { fromRight -> nav.push(Route.About, fromRight) },

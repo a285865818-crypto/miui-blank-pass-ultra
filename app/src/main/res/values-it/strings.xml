@@ -121,7 +121,7 @@
     <string name="search_history_remove">Tieni premuto per eliminare questa voce</string>
     <string name="about_changelog_section">Novità</string>
     <string name="about_changelog_title">Novità di %1$s:</string>
-    <string name="about_changelog_body">Risolti alcuni problemi noti.</string>
+    <string name="about_changelog_body">Nuovo: Backup e ripristino della configurazione JSON. Esporta/importa le configurazioni di blocco dei permessi per tutte le app.\nNuovo: Statistiche di blocco. Classifica delle chiamate API bloccate per app nella diagnostica.\nRisolti alcuni problemi noti.</string>
     <string name="debug_export_log_downloads">Esporta registro in Download</string>
     <string name="debug_export_log_custom">Esporta registro in cartella personalizzata</string>
 </resources>

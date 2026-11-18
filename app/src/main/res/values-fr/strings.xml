@@ -121,7 +121,7 @@
     <string name="search_history_remove">Appui long pour supprimer cette entrée</string>
     <string name="about_changelog_section">Nouveautés</string>
     <string name="about_changelog_title">Nouveautés de %1$s :</string>
-    <string name="about_changelog_body">Correction de plusieurs problèmes connus.</string>
+    <string name="about_changelog_body">Nouveau : Sauvegarde et restauration de la configuration JSON. Exportez/importez les configurations de blocage des permissions pour toutes les applications.\nNouveau : Statistiques de blocage. Classement des appels API bloqués par application dans les diagnostics.\nCorrection de certains problèmes connus.</string>
     <string name="debug_export_log_downloads">Exporter le journal vers Téléchargements</string>
     <string name="debug_export_log_custom">Exporter le journal vers un dossier personnalisé</string>
 </resources>
