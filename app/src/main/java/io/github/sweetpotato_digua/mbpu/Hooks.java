@@ -561,7 +561,8 @@ final class Hooks {
                         hook(m, chain -> {
                             if (!blocked((Uri) chain.getArg(0), authorities)) return chain.proceed();
                             recordResolver((Uri) chain.getArg(0));
-                            return null;
+                            // H1 修复：Uri 版 call() 给空 Bundle，避免宿主 getString() NPE。
+                            return new android.os.Bundle();
                         });
                         break;
                     case "openFile":
@@ -663,10 +664,44 @@ final class Hooks {
         return emptyBatchResult(args);
     }
 
+    /** M3：跟踪 ContentResolver.acquire* 创建的 client，记录其 authority 供三参数 call 查表。 */
+    private void installProviderAcquireTracking(
+            final java.util.Map<android.content.ContentProviderClient, String> clientAuthorities) {
+        Class<?> resolver = load("android.content.ContentResolver");
+        if (resolver == null) return;
+        for (Method m : resolver.getDeclaredMethods()) {
+            if (!Modifier.isPublic(m.getModifiers())) continue;
+            String name = m.getName();
+            if (!name.equals("acquireContentProviderClient")
+                    && !name.equals("acquireUnstableContentProviderClient")) continue;
+            Class<?>[] pt = m.getParameterTypes();
+            if (pt.length != 1) continue;
+            final boolean byUri = pt[0] == Uri.class;
+            if (!byUri && pt[0] != String.class) continue;
+            hook(m, chain -> {
+                Object result = chain.proceed();
+                if (!(result instanceof android.content.ContentProviderClient)) return result;
+                Object src = chain.getArg(0);
+                String authority = byUri ? ((Uri) src).getAuthority() : (String) src;
+                if (authority != null) {
+                    clientAuthorities.put((android.content.ContentProviderClient) result, authority);
+                }
+                return result;
+            });
+        }
+    }
+
     /** ContentProviderClient 直接走 Binder，不经过 ContentResolver，必须覆盖同一语义入口。 */
     private void installProviderClient(String[] authorities) {
         Class<?> client = load("android.content.ContentProviderClient");
         if (client == null) return;
+        // M3 修复：三参数 call(method, arg, extras) 不带 authority。
+        // acquire 时记录 client→authority 弱映射，call 时查表；
+        // 查不到映射（框架内部创建的 client）保守放行，不误伤宿主私有 provider。
+        final java.util.Map<android.content.ContentProviderClient, String> clientAuthorities =
+                java.util.Collections.synchronizedMap(
+                        new java.util.WeakHashMap<android.content.ContentProviderClient, String>());
+        installProviderAcquireTracking(clientAuthorities);
         for (Method m : client.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers())) continue;
             Class<?>[] pt = m.getParameterTypes();
@@ -681,6 +716,16 @@ final class Hooks {
                             return chain.proceed();
                         }
                         recordResolver((String) chain.getArg(0));
+                        return new android.os.Bundle();
+                    });
+                } else if (pt.length == 3 && pt[1] == String.class
+                        && pt[2] == android.os.Bundle.class) {
+                    hook(m, chain -> {
+                        String authority = clientAuthorities.get(chain.getThisObject());
+                        if (authority == null || !blockedAuthority(authority, authorities)) {
+                            return chain.proceed();
+                        }
+                        recordResolver(authority);
                         return new android.os.Bundle();
                     });
                 }
@@ -1009,6 +1054,35 @@ final class Hooks {
                 }, true);
                 continue;
             }
+            // M6：UID/权限探测也纳入应用列表屏蔽。
+            boolean uidQuery = n.equals("getPackageUid") || n.equals("getPackageUidAsUser");
+            boolean uidList = n.equals("getPackagesForUid");
+            boolean permHolders = n.equals("getPackagesHoldingPermissions");
+            if (uidQuery) {
+                hook(m, chain -> {
+                    String target = chain.getArgs().isEmpty() ? null : (String) chain.getArg(0);
+                    if (target != null && !target.equals(pkg)) {
+                        BlockStats.record(Config.APPS);
+                        throw new android.content.pm.PackageManager.NameNotFoundException(target);
+                    }
+                    return chain.proceed();
+                }, true);
+                continue;
+            }
+            if (uidList) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.APPS);
+                    return new String[0];
+                });
+                continue;
+            }
+            if (permHolders) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.APPS);
+                    return new java.util.ArrayList<>();
+                });
+                continue;
+            }
             if (!listing && !querying) continue;
             if (!List.class.isAssignableFrom(m.getReturnType())) continue;
             hook(m, chain -> {
@@ -1043,11 +1117,17 @@ final class Hooks {
                         }
                     }
                     if (immediate) {
-                        // 投到主线程，模拟系统行为
-                        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                        // M4/M5 修复：使用调用方 Handler（为空回退主线程），并直接通过
+                        // 公共接口 OnAccountsUpdateListener 调用，避免私有/lambda 类
+                        // getMethod().invoke() 的 IllegalAccessException。
+                        final android.os.Handler handler = (android.os.Handler) chain.getArg(1);
+                        final android.os.Handler poster = handler != null
+                                ? handler
+                                : new android.os.Handler(android.os.Looper.getMainLooper());
+                        poster.post(() -> {
                             try {
-                                listener.getClass().getMethod("onAccountsUpdated", Account[].class)
-                                        .invoke(listener, new Account[0]);
+                                ((android.accounts.OnAccountsUpdateListener) listener)
+                                        .onAccountsUpdated(new Account[0]);
                             } catch (Throwable ignored) {
                             }
                         });
@@ -1088,9 +1168,18 @@ final class Hooks {
                         deliverAccountCallback(chain, f);
                         return f;
                     });
+                } else if (m.getName().startsWith("getAuthToken")) {
+                    // H2 修复：账户认证也要屏蔽，不能放行真实 AuthToken。
+                    // Future.getResult() 按系统语义抛 OperationCanceledException，
+                    // 调用方收到“操作已取消”，不会误认成功。callback 只负责失败投递。
+                    hook(m, chain -> {
+                        BlockStats.record(Config.ACCOUNTS);
+                        Object f = canceledAccountFuture();
+                        deliverAccountCallback(chain, f);
+                        return f;
+                    });
                 } else {
-                    // 其余（getAuthToken/addAccount/...）不伪装：交给系统走真实失败路径，
-                    // 比返回错误类型的 Future 安全得多。
+                    // addAccount 等会启动认证 UI 的方法不伪装，保持系统失败路径。
                     continue;
                 }
             } else if (java.util.Map.class.isAssignableFrom(m.getReturnType())
@@ -1133,6 +1222,22 @@ final class Hooks {
         } catch (Throwable ignored) {
             // 投递失败不影响 Future 本身，调用方仍可走 getResult()。
         }
+    }
+
+    /** 已取消的账户 Future：getResult() 与系统取消操作一致抛 OperationCanceledException。 */
+    private static <T> android.accounts.AccountManagerFuture<T> canceledAccountFuture() {
+        return new android.accounts.AccountManagerFuture<T>() {
+            @Override public boolean cancel(boolean mayInterruptIfRunning) { return false; }
+            @Override public boolean isCancelled() { return true; }
+            @Override public boolean isDone() { return true; }
+            @Override public T getResult() throws android.accounts.OperationCanceledException {
+                throw new android.accounts.OperationCanceledException();
+            }
+            @Override public T getResult(long timeout, java.util.concurrent.TimeUnit unit)
+                    throws android.accounts.OperationCanceledException {
+                throw new android.accounts.OperationCanceledException();
+            }
+        };
     }
 
     /** 已完成的泛型 Future：用于 hasFeatures 这类返回标量的方法。 */

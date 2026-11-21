@@ -88,11 +88,18 @@ build() {
     # NDK 无 libgcc，内置函数走 NDK 的 compiler-rt；resource-dir 指到 NDK 的
     # lib/clang/<ver>，clang 才能按 lib/linux/libclang_rt.builtins-<arch>-android.a
     # 解析到库（L27）。
-    "$CC" --target="$target" --sysroot="$SYSROOT" \
+    if ! "$CC" --target="$target" --sysroot="$SYSROOT" \
         -shared -fPIC -fuse-ld=lld -rtlib=compiler-rt ${LLD:+--ld-path="$LLD"} \
         -resource-dir "$RT_RESOURCEDIR" \
         -o "$OUT/$abi/libmbpu_security.so" \
-        "$SRC" -lc -llog
+        "$SRC" -lc -llog; then
+        echo "ERROR: native 编译失败：$abi ($target)，已中止且不会使用旧 so。" >&2
+        return 1
+    fi
+    if [ ! -s "$OUT/$abi/libmbpu_security.so" ]; then
+        echo "ERROR: native 编译未生成有效产物：$OUT/$abi/libmbpu_security.so" >&2
+        return 1
+    fi
     echo "$abi: $(ls -l "$OUT/$abi/libmbpu_security.so" | awk '{print $5}') bytes"
 }
 
@@ -102,8 +109,8 @@ build x86_64      x86_64-linux-android29
 
 # 三个 ABI 都要齐（M24）：缺任何一个都算失败，别让 build.sh 打包出残缺 APK。
 for abi in arm64-v8a armeabi-v7a x86_64; do
-    if [ ! -f "$OUT/$abi/libmbpu_security.so" ]; then
-        echo "ERROR: $OUT/$abi/libmbpu_security.so 缺失，编译未完成" >&2
+    if [ ! -s "$OUT/$abi/libmbpu_security.so" ]; then
+        echo "ERROR: $OUT/$abi/libmbpu_security.so 缺失或为空，编译未完成，禁止打包。" >&2
         exit 1
     fi
 done

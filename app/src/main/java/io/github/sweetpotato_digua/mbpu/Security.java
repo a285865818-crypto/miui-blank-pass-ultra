@@ -40,6 +40,21 @@ public final class Security {
     private Security() {
     }
 
+    /* H3 修复：CRC 基线已在 JNI_OnLoad 记录；这里做周期性复检，
+     * 覆盖运行时被 patch（Frida 内存改写）的场景。只记日志，不杀进程。 */
+    private static void scheduleIntegrityRecheck() {
+        final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!nativeIntegritySelf()) {
+                    android.util.Log.e("MBPU_SEC", "periodic self-integrity recheck failed");
+                }
+                handler.postDelayed(this, 60_000);
+            }
+        }, 60_000);
+    }
+
     /* ===== native 方法 ===== */
 
     /** 反调试检测：发现调试器/Frida 返回 true */
@@ -165,6 +180,7 @@ public final class Security {
         if (!nativeIntegritySelf()) {
             android.util.Log.e("MBPU_SEC", "self-integrity check failed — .so may be patched");
         }
+        scheduleIntegrityRecheck();
         // 反内存转储：锁定代码段
         nativeProtectMemory();
         // 时序基线

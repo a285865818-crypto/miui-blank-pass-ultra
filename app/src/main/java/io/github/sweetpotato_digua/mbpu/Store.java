@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -36,6 +37,9 @@ public final class Store {
     private static final int MAX_SEARCH_HISTORY = 10;
     private static final String KEY_DIRTY_CONFIG = "dirty_config";
     private static final String KEY_PENDING_RECONCILE = "pending_reconcile";
+    // 远端换代新增字段；原有 cfg:* 键保留，旧 Hook 进程仍可读取。
+    private static final String KEY_REMOTE_GENERATION = "meta:config_generation";
+    private static final String KEY_REMOTE_GENERATION_PREFIX = "meta:config_generation:";
 
     private static final ExecutorService SYNC_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "MBPU-config-sync");
@@ -152,7 +156,8 @@ public final class Store {
                 localValues = local.getAll();
                 dirty = dirtyConfigsLocked();
             }
-            Map<String, ?> remoteValues = prefs.getAll();
+            Map<String, Object> remoteValues = readRemoteConfigs(prefs);
+            Map<String, Object> nextValues = new LinkedHashMap<>(remoteValues);
             SharedPreferences.Editor editor = prefs.edit();
             Set<String> synced = new HashSet<>();
             boolean changed = false;
@@ -163,16 +168,45 @@ public final class Store {
                 if (!isConfigKey(key) || !(value instanceof String) || dirty.contains(key)) continue;
                 if (remoteValues.containsKey(key)) continue;
                 editor.putString(key, (String) value);
+                nextValues.put(key, value);
                 changed = true;
             }
             for (String key : dirty) {
                 Object value = localValues.get(key);
-                if (value instanceof String) editor.putString(key, (String) value);
-                else editor.remove(key);
+                if (value instanceof String) {
+                    editor.putString(key, (String) value);
+                    nextValues.put(key, value);
+                } else {
+                    editor.remove(key);
+                    nextValues.remove(key);
+                }
                 changed = true;
             }
             if (!changed) return;
+
+            // 先独立提交完整新代际，再原子切换代际并发布旧协议键。
+            // 这样新读取方不会看到半份数据，旧 Hook 也只会在最后一次提交后看到新配置。
+            String generation = UUID.randomUUID().toString();
+            String prefix = KEY_REMOTE_GENERATION_PREFIX + generation + ":";
+            SharedPreferences.Editor staging = prefs.edit();
+            for (Map.Entry<String, Object> entry : nextValues.entrySet()) {
+                staging.putString(prefix + entry.getKey(), (String) entry.getValue());
+            }
+            if (!staging.commit()) return;
+            editor.putString(KEY_REMOTE_GENERATION, generation);
             if (!editor.commit()) return;
+
+            // 代际已切换，旧暂存数据可清理；清理失败不影响正确性，下次同步再清。
+            try {
+                SharedPreferences.Editor cleanup = prefs.edit();
+                for (String key : prefs.getAll().keySet()) {
+                    if (key.startsWith(KEY_REMOTE_GENERATION_PREFIX) && !key.startsWith(prefix)) {
+                        cleanup.remove(key);
+                    }
+                }
+                cleanup.apply();
+            } catch (RuntimeException ignored) {
+            }
 
             synchronized (lock) {
                 // 服务重连会把 remote 换成新对象。只有「提交的仍是当前 remote」
@@ -200,6 +234,41 @@ public final class Store {
 
     private static boolean isConfigKey(String key) {
         return key != null && key.startsWith(Config.KEY_PREFIX);
+    }
+
+    /**
+     * 读取完整远端配置。代际在读取期间变化时只重读一次，避免持续换代导致死循环。
+     * 没有代际字段时按旧格式读取，兼容升级前已经存在的数据。
+     */
+    private static Map<String, Object> readRemoteConfigs(SharedPreferences prefs) {
+        Map<String, ?> values = prefs.getAll();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Object generation = values.get(KEY_REMOTE_GENERATION);
+            if (generation == null) return legacyRemoteConfigs(values);
+            String prefix = KEY_REMOTE_GENERATION_PREFIX + generation + ":";
+            Map<String, Object> configs = new LinkedHashMap<>();
+            for (Map.Entry<String, ?> entry : values.entrySet()) {
+                String key = entry.getKey();
+                if (key.startsWith(prefix) && entry.getValue() instanceof String) {
+                    configs.put(key.substring(prefix.length()), entry.getValue());
+                }
+            }
+            Map<String, ?> verified = prefs.getAll();
+            if (Objects.equals(generation, verified.get(KEY_REMOTE_GENERATION))) return configs;
+            values = verified;
+        }
+        // 两次都碰到换代则退回同一次原子提交发布的旧协议键，不拼接两个代际。
+        return legacyRemoteConfigs(values);
+    }
+
+    private static Map<String, Object> legacyRemoteConfigs(Map<String, ?> values) {
+        Map<String, Object> configs = new LinkedHashMap<>();
+        for (Map.Entry<String, ?> entry : values.entrySet()) {
+            if (isConfigKey(entry.getKey()) && entry.getValue() instanceof String) {
+                configs.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return configs;
     }
 
     private Set<String> dirtyConfigsLocked() {
@@ -251,7 +320,7 @@ public final class Store {
             SharedPreferences r = remote;
             if (r != null) {
                 try {
-                    Object remoteValue = r.getAll().get(key);
+                    Object remoteValue = readRemoteConfigs(r).get(key);
                     value = remoteValue instanceof String ? (String) remoteValue : null;
                 } catch (Throwable ignored) {
                 }
@@ -286,10 +355,8 @@ public final class Store {
         SharedPreferences r = remote;
         if (r != null) {
             try {
-                for (Map.Entry<String, ?> entry : r.getAll().entrySet()) {
-                    if (isConfigKey(entry.getKey()) && entry.getValue() instanceof String) {
-                        merged.put(entry.getKey(), entry.getValue());
-                    }
+                for (Map.Entry<String, Object> entry : readRemoteConfigs(r).entrySet()) {
+                    merged.put(entry.getKey(), entry.getValue());
                 }
             } catch (Throwable ignored) {
             }

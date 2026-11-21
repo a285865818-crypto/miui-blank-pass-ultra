@@ -91,11 +91,13 @@ import io.github.libxposed.service.XposedService
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.anim.AccelerateEasing
@@ -270,10 +272,11 @@ internal fun PermNullScreen(
     var showRestartDialog by remember { mutableStateOf(false) }
     var restarting by remember { mutableStateOf(false) }
     var restartPlan by remember { mutableStateOf<RestartPlan?>(null) }
+    var restartJob by remember { mutableStateOf<Job?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     // 每次进入应用弹一次使用说明；"不再提示"后永久关闭。
-    // 首次进入自动弹说明；是否已弹过记录在 HomeState，跨页面槽位切换不丢。
-    var showHelp by remember { mutableStateOf(!store.helpDisabled() && !home.helpShown) }
+    // HomeState 负责跨页面槽位切换，rememberSaveable 负责旋转等配置变更。
+    var showHelp by rememberSaveable { mutableStateOf(!store.helpDisabled() && !home.helpShown) }
     LaunchedEffect(showHelp) { if (showHelp) home.helpShown = true }
     // 长按多选：选择模式只维护包名集合，不复制应用列表。
     var selecting by rememberSaveable { mutableStateOf(false) }
@@ -286,7 +289,10 @@ internal fun PermNullScreen(
     // 批量操作先确认，再执行；执行中禁止关闭弹窗。
     var pendingBatch by remember { mutableStateOf<BatchAction?>(null) }
     var batchRunning by remember { mutableStateOf(false) }
+    var batchJob by remember { mutableStateOf<Job?>(null) }
     var askRestartAfterBatch by remember { mutableStateOf(false) }
+    // 批量关闭只重启本批目标，不能复用一键重启的全局计划。
+    var batchRestartPlan by remember { mutableStateOf<RestartPlan?>(null) }
 
     // 从设置页返回或 Activity 重建后重新对齐持久化选项，避免页面状态与存储不一致。
     LaunchedEffect(home.loaded, home.labelsLocale) {
@@ -414,28 +420,31 @@ internal fun PermNullScreen(
         // N10 修复：批量关闭后只判断本次 targets 是否需要重启，不要用全局计划。
         // 原来 computeRestartPlan(store) 会把其他应用的待安装/待卸载记录也算进来，
         // 导致批量操作 B 却连带强停无关的 A。
-        if (targets.size - failed.size > 0) {
-            askRestartAfterBatch = withContext(Dispatchers.IO) {
+        val succeeded = targets - failed.toSet()
+        if (succeeded.isNotEmpty()) {
+            val restartTargets = withContext(Dispatchers.IO) {
                 runCatching {
-                    val enabled = store.snapshot().filterKeys { it != Config.MODULE_PKG }
-                        .filterValues { it != 0 }.keys
                     val pendingStop = store.pendingStops() - Config.MODULE_PKG
-                    val scope = enabled + pendingStop
-                    // 只保留本次操作涉及的目标
-                    val mine = scope.intersect(targets.toSet())
-                    if (mine.isEmpty()) return@runCatching false
-                    val running = RootShell.runningOf(mine)
-                    running.isNotEmpty()
-                }.getOrDefault(true)
+                    val mine = pendingStop.intersect(succeeded.toSet())
+                    if (mine.isEmpty()) emptySet() else RootShell.runningOf(mine)
+                    // 查询失败时仍只保留本批成功目标，doRestart 会再次过滤未运行进程。
+                }.getOrDefault(succeeded.toSet())
             }
+            batchRestartPlan = RestartPlan(
+                pendingInstall = emptyList(),
+                pendingUninstall = restartTargets.toList(),
+            )
+            askRestartAfterBatch = restartTargets.isNotEmpty()
         }
     }
 
     fun confirmBatch(action: BatchAction) {
         val targets = selected.toList()
         if (targets.isEmpty()) return
+        // 同帧重复确认也只保留最新批次，旧任务不得再提交状态。
+        batchJob?.cancel()
         batchRunning = true
-        scope.launch {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 when (action) {
                     BatchAction.ENABLE -> runBatchEnable(targets)
@@ -447,21 +456,30 @@ internal fun PermNullScreen(
             } catch (t: Throwable) {
                 notify(context.getString(R.string.toast_operation_failed, t.message ?: t.javaClass.simpleName))
             } finally {
-                batchRunning = false
-                pendingBatch = null
+                // 旧任务的 finally 可能晚于新任务启动，不能清除新任务的运行状态。
+                if (batchJob === coroutineContext[Job]) {
+                    batchJob = null
+                    batchRunning = false
+                    pendingBatch = null
+                }
             }
         }
+        batchJob = job
+        job.start()
     }
 
     /** 严格使用确认弹窗展示过的同一批目标，不在确认后扩大强停范围。 */
     fun doRestart(plan: RestartPlan?) {
+        // 二次触发先取消旧计划，避免两批强停交错执行。
+        restartJob?.cancel()
         val targets = (plan?.pendingInstall.orEmpty() + plan?.pendingUninstall.orEmpty()).toSet()
         if (targets.isEmpty()) {
+            restarting = false
             notify(context.getString(R.string.toast_no_targets))
             return
         }
         restarting = true
-        scope.launch {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val result = withContext(Dispatchers.IO) {
                     val running = RootShell.runningOf(targets)
@@ -502,10 +520,16 @@ internal fun PermNullScreen(
             } catch (t: Throwable) {
                 notify(context.getString(R.string.toast_restart_failed, t.message ?: t.javaClass.simpleName))
             } finally {
-                restarting = false
-                showRestartDialog = false
+                // 仅由当前任务收尾，防止已取消任务覆盖新任务状态。
+                if (restartJob === coroutineContext[Job]) {
+                    restartJob = null
+                    restarting = false
+                    showRestartDialog = false
+                }
             }
         }
+        restartJob = job
+        job.start()
     }
 
     DisposableEffect(Unit) {
@@ -520,7 +544,14 @@ internal fun PermNullScreen(
             }
         }
         App.addListener(listener)
-        onDispose { App.removeListener(listener) }
+        onDispose {
+            App.removeListener(listener)
+            // rememberCoroutineScope 也会取消子任务；这里显式终止两类长任务并清理引用。
+            batchJob?.cancel()
+            restartJob?.cancel()
+            batchJob = null
+            restartJob = null
+        }
     }
 
     // 主页之外（AppRoot 的加载/刷新）产生的错误，统一在这里落到同一条提示条上。
@@ -1687,20 +1718,28 @@ internal fun PermNullScreen(
                 show = askRestartAfterBatch,
                 title = stringResource(R.string.batch_restart_title),
                 summary = stringResource(R.string.batch_restart_summary),
-                onDismissRequest = { askRestartAfterBatch = false },
+                onDismissRequest = {
+                    askRestartAfterBatch = false
+                    batchRestartPlan = null
+                },
             ) {
                 Row(modifier = Modifier.fillMaxWidth()) {
                     TextButton(
                         text = stringResource(R.string.cancel),
-                        onClick = { askRestartAfterBatch = false },
+                        onClick = {
+                            askRestartAfterBatch = false
+                            batchRestartPlan = null
+                        },
                         modifier = Modifier.weight(1f),
                     )
                     Spacer(Modifier.width(12.dp))
                     TextButton(
                         text = stringResource(R.string.confirm_restart),
                         onClick = {
+                            val plan = batchRestartPlan
                             askRestartAfterBatch = false
-                            showRestartDialog = true
+                            batchRestartPlan = null
+                            doRestart(plan)
                         },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.textButtonColorsPrimary(),

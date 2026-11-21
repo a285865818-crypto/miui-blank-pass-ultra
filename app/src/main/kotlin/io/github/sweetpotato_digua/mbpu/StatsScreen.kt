@@ -289,13 +289,18 @@ private fun loadBlockStats(context: Context): BlockStatsUiState {
             BlockStatsUiState.Failure
         }
     }
-    if (result.truncated) return BlockStatsUiState.Failure
-
-    val lines = result.output.lineSequence().toList()
+    // 截断不算失败：数据可能不完整但仍然有效，比显示错误页有用。
+    // 只丢弃被截断的首行（可能从中间开始），其余正常解析。
+    val rawLines = result.output.lineSequence().toList()
+    val lines = if (result.truncated && rawLines.isNotEmpty()) {
+        rawLines.drop(1)  // 首行可能不完整
+    } else {
+        rawLines
+    }
     val text = if (lines.size > STATS_LOG_TAIL_LINES) {
         lines.takeLast(STATS_LOG_TAIL_LINES).joinToString("\n")
     } else {
-        result.output
+        lines.joinToString("\n")
     }
     val parsed = parseBlockStats(text)
     if (parsed == null || parsed.appCalls.isEmpty()) return BlockStatsUiState.NoRecords

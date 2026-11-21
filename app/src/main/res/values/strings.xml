@@ -124,7 +124,7 @@
     <string name="search_history_remove">长按删除这条记录</string>
     <string name="about_changelog_section">更新日志</string>
     <string name="about_changelog_title">%1$s 版本更新日志：</string>
-    <string name="about_changelog_body">新增：配置JSON备份与恢复，可导出/导入全部应用的权限拦截配置。\n新增：拦截统计，诊断页展示每个应用的 API 拦截调用次数排行。\n解决了一些已知问题。</string>
+    <string name="about_changelog_body">解决了一些已知问题。</string>
     <string name="debug_export_log_downloads">导出日志到下载目录</string>
     <string name="debug_export_log_custom">导出日志到自定义目录</string>
     <string name="backup_section">配置备份</string>

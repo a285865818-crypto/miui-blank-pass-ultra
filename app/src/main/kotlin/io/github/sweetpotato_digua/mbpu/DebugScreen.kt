@@ -437,17 +437,23 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                     if (exportDir.isNotEmpty()) {
                         Button(
                             onClick = {
+                                // L 修复：释放失败保留 URI 记录，否则既无法重试也无法恢复
                                 runCatching {
                                     context.contentResolver.releasePersistableUriPermission(
                                         Uri.parse(exportDir),
                                         Intent.FLAG_GRANT_READ_URI_PERMISSION or
                                             Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                                     )
+                                }.onSuccess {
+                                    store.setExportTreeUri("")
+                                    exportDir = ""
+                                    messageIsError = false
+                                    message = context.getString(R.string.debug_dir_reset)
+                                }.onFailure {
+                                    android.util.Log.w("MBPU", "releasePersistableUriPermission failed", it)
+                                    messageIsError = true
+                                    message = context.getString(R.string.debug_dir_denied)
                                 }
-                                store.setExportTreeUri("")
-                                exportDir = ""
-                                messageIsError = false
-                                message = context.getString(R.string.debug_dir_reset)
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -779,18 +785,21 @@ private fun readLogBundle(): LogBundle {
     val script = buildString {
         append("f=\$(ls -t /data/adb/lspd/log/modules_*.log 2>/dev/null | head -1); ")
         append("[ -n \"\$f\" ] || exit 3; ")
-        append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\" | tail -n ")
-        append(LOG_TAIL_LINES * 4)
-        append("; echo ").append(LOG_SEPARATOR).append("; ")
+        // HOOKSTAT 先输出：RootShell 有 64KB 上限，日志正文 ~96KB 会把后续内容
+        // 截断丢失。把小体积的 HOOKSTAT 放前面，截断只影响日志正文显示。
         append("grep -F 'HOOKSTAT|' \"\$f\" | ")
         append("awk -F'|' '{last[\$2]=\$0} END {for (k in last) print last[k]}'")
+        append("; echo ").append(LOG_SEPARATOR).append("; ")
+        append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\" | tail -n ")
+        append(LOG_TAIL_LINES * 4)
     }
     val result = RootShell.exec(script)
     if (result.exitCode == 3) throw IllegalStateException("no log file")
     if (!result.ok()) throw IllegalStateException(result.output)
     val split = result.output.indexOf(LOG_SEPARATOR)
-    val logPart = if (split >= 0) result.output.substring(0, split) else result.output
-    val statPart = if (split >= 0) result.output.substring(split + LOG_SEPARATOR.length) else ""
+    // 输出顺序：HOOKSTAT → 分隔符 → 日志正文（64KB 截断只丢日志）
+    val statPart = if (split >= 0) result.output.substring(0, split) else ""
+    val logPart = if (split >= 0) result.output.substring(split + LOG_SEPARATOR.length) else result.output
     val lines = logPart.lineSequence()
         .filter { it.isNotBlank() }
         .map { trimLogLine(it) }

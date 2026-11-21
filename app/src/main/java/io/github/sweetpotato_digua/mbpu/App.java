@@ -7,6 +7,8 @@ import android.os.Bundle;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import io.github.libxposed.service.XposedService;
 import io.github.libxposed.service.XposedServiceHelper;
@@ -26,6 +28,13 @@ public class App extends Application {
     private static Store store;
     private static final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private static final List<Activity> activities = new CopyOnWriteArrayList<>();
+    private static final long[] REMOTE_RETRY_DELAYS_MS = {100, 250, 500, 900};
+    private static final long REMOTE_RETRY_DEADLINE_MS = 2800;
+    private static final ExecutorService REMOTE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "MBPU-remote-preferences");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     @Override
     public void onCreate() {
@@ -85,29 +94,8 @@ public class App extends Application {
                 @Override
                 public void onServiceBind(XposedService s) {
                     service = s;
-                    // N7 修复：getRemotePreferences 瞬时失败不再置 null 放弃，
-                    // 而是延迟重试，否则进程内只能用本地镜像，离线修改无法同步。
-                    try {
-                        remote = s.getRemotePreferences(Config.GROUP);
-                    } catch (Throwable t) {
-                        remote = null;
-                    }
-                    store.setRemote(remote);
-                    if (remote == null) {
-                        // 失败：1 秒后重试一次，避免 daemon 尚未就绪时永久失败
-                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                            if (service != s) return;   // 服务已换，放弃
-                            try {
-                                remote = s.getRemotePreferences(Config.GROUP);
-                            } catch (Throwable t) {
-                                remote = null;
-                            }
-                            if (remote != null) {
-                                store.setRemote(remote);
-                                fire();
-                            }
-                        }, 1000);
-                    }
+                    // daemon 尚未就绪时在后台有限退避重试，不在服务回调线程反复 IPC。
+                    fetchRemotePreferences(s);
                     fire();
                 }
 
@@ -122,6 +110,50 @@ public class App extends Application {
             });
         } catch (Throwable ignored) {
         }
+    }
+
+    /** 后台获取远端配置；最多尝试 5 次，退避等待合计不超过 1.75 秒。 */
+    private static void fetchRemotePreferences(XposedService s) {
+        REMOTE_EXECUTOR.execute(() -> {
+            SharedPreferences prefs = null;
+            Throwable failure = null;
+            long deadline = android.os.SystemClock.elapsedRealtime() + REMOTE_RETRY_DEADLINE_MS;
+            for (int attempt = 0; attempt <= REMOTE_RETRY_DELAYS_MS.length; attempt++) {
+                if (service != s) return;
+                try {
+                    prefs = s.getRemotePreferences(Config.GROUP);
+                    if (prefs != null) {
+                        failure = null;
+                        break;
+                    }
+                    failure = new IllegalStateException("getRemotePreferences returned null");
+                } catch (Throwable t) {
+                    failure = t;
+                }
+                if (attempt == REMOTE_RETRY_DELAYS_MS.length) break;
+                long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+                if (remaining <= 0) break;
+                try {
+                    Thread.sleep(Math.min(REMOTE_RETRY_DELAYS_MS[attempt], remaining));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    failure = interrupted;
+                    break;
+                }
+            }
+            SharedPreferences result = prefs;
+            Throwable finalFailure = failure;
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                if (service != s) return;
+                remote = result;
+                store.setRemote(result);
+                if (result == null) {
+                    // 保持原有的本地镜像降级行为，并留下最终失败原因。
+                    android.util.Log.e("MBPU", "getRemotePreferences failed after retries", finalFailure);
+                }
+                fire();
+            });
+        });
     }
 
     /**

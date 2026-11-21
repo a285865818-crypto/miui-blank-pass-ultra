@@ -59,16 +59,41 @@ if [ -f local.properties ]; then
     unset _sig
 fi
 
+# ---- 修复版应用内更新日志一致性预检 ----
+# 关于页正文来自各语言的 about_changelog_body，并不会自动读取 CHANGELOG 文件。
+# 修复版若只更新版本号和 CHANGELOG，旧功能文案会留在关于页（v1.4.1 实测踩坑）。
+if [ "$VARIANT" = "release" ]; then
+    _version=$(sed -n 's/^[[:space:]]*versionName = "\(.*\)"/\1/p' app/build.gradle.kts | head -1)
+    _changelog="$ROOT/CHANGELOG-v${_version}.md"
+    if [ -f "$_changelog" ] && [ "$(cat "$_changelog")" = "解决了一些已知问题。" ]; then
+        _default_body=$(sed -n 's/.*<string name="about_changelog_body">\(.*\)<\/string>.*/\1/p' app/src/main/res/values/strings.xml)
+        if [ "$_default_body" != "解决了一些已知问题。" ]; then
+            echo "ERROR: 修复版默认 about_changelog_body 必须同步为「解决了一些已知问题。」；已中止打包。" >&2
+            exit 1
+        fi
+        for _strings in app/src/main/res/values*/strings.xml; do
+            if grep '<string name="about_changelog_body">' "$_strings" | grep -qF '\n'; then
+                echo "ERROR: $_strings 的修复版更新日志仍含多行旧功能文案；已中止打包。" >&2
+                exit 1
+            fi
+        done
+        unset _strings
+    fi
+    unset _version _changelog _default_body
+fi
+
 # ---- native 产物预检（M23）----
 # Gradle 不编 native，只打包 jniLibs。改了 security.c 忘记重跑 build_native.sh
 # 会把旧 so 静默打进 APK，校验逻辑白改。这里在打包前把两件事都拦下来。
 for abi in arm64-v8a armeabi-v7a x86_64; do
     SO="$ROOT/app/src/main/jniLibs/$abi/libmbpu_security.so"
-    if [ ! -f "$SO" ]; then
-        echo "ERROR: $SO 不存在，请先跑 build_native.sh" >&2; exit 1
+    if [ ! -s "$SO" ]; then
+        echo "ERROR: native 产物 $SO 不存在或为空，请先成功运行 build_native.sh；已中止打包。" >&2
+        exit 1
     fi
     if [ "$ROOT/app/src/main/cpp/security.c" -nt "$SO" ]; then
-        echo "WARN: security.c 比 $SO 新，请重跑 build_native.sh" >&2
+        echo "ERROR: native 产物 $SO 已过期（security.c 更新），请重跑 build_native.sh；已中止打包。" >&2
+        exit 1
     fi
 done
 

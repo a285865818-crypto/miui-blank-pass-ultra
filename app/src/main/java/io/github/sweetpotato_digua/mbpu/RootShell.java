@@ -16,7 +16,12 @@ import java.util.concurrent.TimeoutException;
 /** Root 工具：仅对经过包名白名单校验的目标执行 force-stop。 */
 final class RootShell {
 
+    /** 单次 su 会话的整体上限，包含会话内所有命令。 */
     private static final long TIMEOUT_SECONDS = 15;
+    /** 批量脚本中每条命令的独立上限，避免一条命令耗尽整批预算。 */
+    private static final long COMMAND_TIMEOUT_SECONDS = 5;
+    /** 进程退出后仍须限制输出读取，不能因管道未关闭而无限等待。 */
+    private static final long OUTPUT_TIMEOUT_SECONDS = 2;
     private static final int MAX_OUTPUT_CHARS = 64 * 1024;
     /** force-stop 分批大小：每批一次 exec，控制在单次超时预算内。 */
     private static final int BATCH_SIZE = 5;
@@ -143,15 +148,19 @@ final class RootShell {
             process = new ProcessBuilder("su", "-c", script).redirectErrorStream(true).start();
             Process running = process;
             output = OUTPUT_READER.submit((Callable<String[]>) () -> readOutput(running));
+            // 整体超时约束整个 su 会话；超时返回后 finally 会销毁该进程并关闭管道。
             if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                return new Result(124, "command timed out");
+                return new Result(124, "su session timed out after " + TIMEOUT_SECONDS + "s");
             }
-            String[] read = output.get(2, TimeUnit.SECONDS);
+            // 即使 su 已退出，也不能信任对端一定关闭输出管道。
+            String[] read = output.get(OUTPUT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             return new Result(process.exitValue(), read[0], Boolean.parseBoolean(read[1]));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new Result(-1, "interrupted");
-        } catch (TimeoutException | ExecutionException e) {
+        } catch (TimeoutException e) {
+            return new Result(124, "output read timed out after " + OUTPUT_TIMEOUT_SECONDS + "s");
+        } catch (ExecutionException e) {
             return new Result(-1, String.valueOf(e.getCause() == null ? e : e.getCause()));
         } catch (Throwable t) {
             return new Result(-1, String.valueOf(t));
@@ -191,7 +200,8 @@ final class RootShell {
         for (int from = 0; from < valid.size(); from += BATCH_SIZE) {
             StringBuilder script = new StringBuilder("failed=0\n");
             for (String pkg : valid.subList(from, Math.min(from + BATCH_SIZE, valid.size()))) {
-                script.append("timeout 5 am force-stop ").append(pkg).append(" || failed=1\n");
+                script.append("timeout ").append(COMMAND_TIMEOUT_SECONDS)
+                        .append(" am force-stop ").append(pkg).append(" || failed=1\n");
             }
             script.append("exit $failed");
             Result r = exec(script.toString());

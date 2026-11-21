@@ -280,3 +280,50 @@ remote prefs 不可用（回调早于 attach、框架不支持、类型异常）
 | N17 | 低 | DebugScreen.kt:651 | 内层 runCatching 吞异常 | 去掉内层 runCatching |
 | N18 | 低 | build_native.sh:92 | LLD 覆盖变量从没被使用 | 加 ${LLD:+--ld-path="$LLD"} |
 | N19 | 低 | security.c:54/190 | read() 没处理 EINTR | 信号打断时重试 |
+
+---
+
+## 第四轮审查（v1.4.0 后，2026-11-21，五路 code-auditor，39 项，已修复于 v1.4.1）
+
+### 高危
+
+| # | 位置 | 问题 | 修复 |
+|---|------|------|------|
+| H1 | Hooks.java ContentResolver.call(Uri,…) | 拦截后返回 null → 宿主 NPE | 返回空 Bundle |
+| H2 | Hooks.java getAuthToken* | 账户认证 API 放行，可拿真实 AuthToken | 全量拦截（含 ByFeatures），返回 OperationCanceled future + 回调 |
+| H3 | security.c nativeIntegritySelf | CRC 基线首调自学习且只查一次 | JNI_OnLoad 加载即记录基线 + 立即 mprotect RX；UI 进程每 60s 复检 |
+
+### 中危
+
+| # | 位置 | 问题 | 修复 |
+|---|------|------|------|
+| M1 | Store.java syncRemote | remote 换代竞态，读到半份配置 | 代际 staging 全量写入 + 原子切换 + 旧协议 cfg:* 同批发布；读取侧代际校验重读 |
+| M2 | RootShell.java | 批量执行/输出读取超时保护分散 | 单命令 5s/输出 2s/会话 15s 三层超时，超时返回 124 并 killAndReap |
+| M3 | Hooks.java ContentProviderClient.call | 三参数 call(method,arg,extras) 绕过 | acquire* 时用 WeakHashMap 记录 client→authority，三参 call 查表拦截；查不到保守放行 |
+| M4/M5 | Hooks.java 账户监听 | 反射失败/忽略调用方 Handler | OnAccountsUpdateListener 直调 + 调用方 Handler（null 回退主线程） |
+| M6 | Hooks.java 应用列表 | getPackageUid(AsUser)/getPackagesForUid/getPackagesHoldingPermissions 探测绕过 | 补全拦截 |
+| M7 | PermNullModule.java | 重试线程竞态，旧线程覆盖新配置 | AtomicBoolean 单线程 + AtomicReference 代际 CAS + remove(pkg,ref) 精准清理 |
+| M8 | DebugScreen.kt | 64KiB 从头截断丢末尾；只读最新一个日志文件 | 最近 3 个 modules_*.log 合并，尾部优先截取，UI 明示「仅显示末尾部分」 |
+| M9 | StatsScreen.kt | truncated 语义不清 | 灰点/截断标记修正 |
+| M10 | AppLabels.kt | 图标缓存审查 | 确认现有 LruCache+lastUpdateTime 键已满足，无需改 |
+| M11 | PermNullScreen.kt | 批量重启用全局计划，旧任务不取消 | 本批专属 batchRestartPlan + batchJob/restartJob 取消管理，销毁即取消 |
+| M12 | PermNullScreen.kt | helpShown 配置变更丢失 | rememberSaveable + Store 持久化 |
+| M13 | build.sh / build_native.sh | native 失败仍用旧 so 打包 | so 缺失/空/过期即中止；逐 ABI 显式校验 |
+| M14 | security.c nativeCheckSig | 长度未校验先读 64 字节 | 长度先校验 + 常量时间逐字节比较 |
+| M15 | security.c | mprotect 时机晚 | JNI_OnLoad 即锁定 RX |
+| M16 | security.c nativeTimingCheck | 零基线导致异常分支不可达 | timing_baseline_set 独立状态，首调记录后续比对 |
+
+### 低危（摘要）
+
+- App.java getRemotePreferences 只重试一次 → 后台单线程 5 次退避（100/250/500/900ms，总 ≤3s），最终失败降级并记日志
+- security.c：32 位时间差 int64_t 化；read() 统一 read_retry EINTR 重试
+- DebugScreen.kt SAF 释放失败丢 URI → 成功才清记录，失败保留并记日志
+- 语言包：15 个语言包补齐 28 个 key（备份/恢复 + 统计区块，各语言本地翻译）；清理 bo 英文残留（help_files_body 等）、zh-rHK/zh-rTW 各 38 个 key 的简体字形与英文残留（HK「復原」/TW「還原」）
+- bo/tr/ug 的 search_match_count 占位符顺序不同但带索引，确认合法无需改
+
+### 已知残余限制
+
+- 下拉刷新定格：miuix internal 状态泄漏，用户决定暂不修
+- 静态 patch（加载前改 so）CRC 基线本身被污染的场景由签名校验兜底
+
+发布修正（用户实测发现）：关于页版本号取自 PackageInfo，但更新日志正文来自各语言 `about_changelog_body`，v1.4.1 初次构建漏改正文，仍显示 v1.4.0 功能清单。20 个语言文件已同步为修复版文案；build.sh 增加修复版多行旧文案预检，防止复发。

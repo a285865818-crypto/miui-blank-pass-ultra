@@ -30,12 +30,22 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <stdint.h>
 #include <dirent.h>
 
 #define LOG_TAG "MBPU_SEC"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+
+/* 所有文件读取统一处理信号中断，避免把 EINTR 误判为检测结束或失败。 */
+static ssize_t read_retry(int fd, void *buf, size_t count) {
+    ssize_t n;
+    do {
+        n = read(fd, buf, count);
+    } while (n < 0 && errno == EINTR);
+    return n;
+}
 
 /* ===== CRC32 查表（编译时生成） ===== */
 static uint32_t crc32_table[256];
@@ -66,8 +76,7 @@ static int check_tracer_pid(void) {
     char buf[256] = {0};
     int fd = open("/proc/self/status", O_RDONLY);
     if (fd < 0) return 0;
-    ssize_t n;
-    do { n = read(fd, buf, sizeof(buf) - 1); } while (n < 0 && errno == EINTR);
+    ssize_t n = read_retry(fd, buf, sizeof(buf) - 1);
     close(fd);
     if (n <= 0) return 0;
     char *p = strstr(buf, "TracerPid:");
@@ -125,7 +134,7 @@ static int check_frida_threads(void) {
         int fd = open(path, O_RDONLY);
         if (fd < 0) continue;
         char name[64] = {0};
-        ssize_t n = read(fd, name, sizeof(name) - 1);
+        ssize_t n = read_retry(fd, name, sizeof(name) - 1);
         close(fd);
         if (n > 0) {
             if (strstr(name, "frida") || strstr(name, "gadget") || strstr(name, "linjector"))
@@ -188,12 +197,20 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeCheckSig(JNIEnv *env, jcla
         return JNI_TRUE;
     }
 
-    /* 常量时间比较，防止时序侧信道 */
-    volatile int diff = 0;
-    for (int i = 0; i < 64; i++) {
+    /* 长度必须先确认，再进入固定 64 字节循环，避免短字符串导致越界读取。 */
+    size_t actual_len = strlen(actual);
+    if (actual_len != 64) {
+        (*env)->ReleaseStringUTFChars(env, sig_hash, actual);
+        (*env)->ReleaseStringUTFChars(env, expected_hash, expected);
+        return JNI_FALSE;
+    }
+
+    /* 等长后逐字节累积差异，不因首个不同字节提前退出。 */
+    unsigned int diff = 0;
+    for (size_t i = 0; i < actual_len; i++) {
         diff |= (unsigned char)actual[i] ^ (unsigned char)expected[i];
     }
-    int match = (strlen(actual) == 64 && diff == 0);
+    int match = (diff == 0);
     (*env)->ReleaseStringUTFChars(env, sig_hash, actual);
     (*env)->ReleaseStringUTFChars(env, expected_hash, expected);
     return match ? JNI_TRUE : JNI_FALSE;
@@ -222,8 +239,7 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegrity(JNIEnv *env, jcl
     char prev[16] = {0};
     ssize_t n;
     while (1) {
-        n = read(fd, buf, sizeof(buf) - 1);
-        if (n < 0 && errno == EINTR) continue;
+        n = read_retry(fd, buf, sizeof(buf) - 1);
         if (n <= 0) break;
         buf[n] = '\0';
         char joined[sizeof(prev) + sizeof(buf)];
@@ -252,6 +268,24 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegrity(JNIEnv *env, jcl
  */
 
 static uint32_t baseline_crc = 0;
+static int baseline_set = 0;
+static int find_self_text(const char *so_name, uintptr_t *start, size_t *len);
+
+/* H3 修复：基线在 so 加载（JNI_OnLoad）时立即记录，而不是首次 Java 调用才记录。
+ * Java 首次调用前可能已被 patch；加载时记录把窗口压到最小。
+ * 加载前就被静态 patch 的情况由签名校验（重打包必换签名）兜底。 */
+static void record_baseline_if_needed(void) {
+    if (baseline_set) return;
+    uintptr_t start;
+    size_t len;
+    if (find_self_text("libmbpu_security.so", &start, &len) == 0
+            && len > 0 && len <= 1024 * 1024) {
+        baseline_crc = crc32_calc((const void *)start, len);
+        baseline_set = 1;
+        LOGI("integrity: baseline CRC32=0x%08x recorded at load, .text size=%zu", baseline_crc, len);
+    }
+}
+
 
 /* 从 maps 中找到自己 so 的 .text 段范围 */
 static int find_self_text(const char *so_name, uintptr_t *start, size_t *len) {
@@ -262,7 +296,9 @@ static int find_self_text(const char *so_name, uintptr_t *start, size_t *len) {
     size_t line_pos = 0;
     ssize_t n;
     int found = 0;
-    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+    while (1) {
+        n = read_retry(fd, buf, sizeof(buf));
+        if (n <= 0) break;
         for (ssize_t i = 0; i < n; i++) {
             if (buf[i] == '\n' || line_pos >= sizeof(line) - 1) {
                 line[line_pos] = '\0';
@@ -282,7 +318,7 @@ static int find_self_text(const char *so_name, uintptr_t *start, size_t *len) {
         if (found) break;
     }
     close(fd);
-    return found ? 0 : -1;
+    return found && n >= 0 ? 0 : -1;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -294,10 +330,10 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeIntegritySelf(JNIEnv *env,
         return JNI_TRUE; /* 找不到不算异常 */
     }
     if (text_len == 0 || text_len > 1024 * 1024) return JNI_TRUE;
+    record_baseline_if_needed();
     uint32_t crc = crc32_calc((const void *)text_start, text_len);
-    if (baseline_crc == 0) {
-        baseline_crc = crc;
-        LOGI("integrity: baseline CRC32=0x%08x, .text size=%zu", crc, text_len);
+    if (!baseline_set) {
+        LOGW("integrity: baseline unavailable, skip compare");
         return JNI_TRUE;
     }
     if (crc != baseline_crc) {
@@ -336,23 +372,47 @@ Java_io_github_sweetpotato_1digua_mbpu_Security_nativeProtectMemory(JNIEnv *env,
  */
 
 static struct timespec ts_baseline = {0, 0};
+static int timing_baseline_set = 0;
 
 JNIEXPORT jboolean JNICALL
 Java_io_github_sweetpotato_1digua_mbpu_Security_nativeTimingCheck(JNIEnv *env, jclass clazz) {
     struct timespec ts_now;
-    clock_gettime(CLOCK_MONOTONIC, &ts_now);
-    if (ts_baseline.tv_sec == 0 && ts_baseline.tv_nsec == 0) {
+    if (clock_gettime(CLOCK_MONOTONIC, &ts_now) != 0) return JNI_FALSE;
+    /* 首次只建立基线；后续每次都与上一次调用比较，不再依赖时间戳非零。 */
+    if (!timing_baseline_set) {
         ts_baseline = ts_now;
+        timing_baseline_set = 1;
         return JNI_FALSE;
     }
-    /* 这里测量的是两次调用间隔；正常间隔应该很短（微秒级）。
-     * 如果 Java 层在两个关键点之间调用此函数，间隔超过 500ms 说明有单步调试。 */
-    long elapsed_ns = (ts_now.tv_sec - ts_baseline.tv_sec) * 1000000000L
-                     + (ts_now.tv_nsec - ts_baseline.tv_nsec);
+
+    /* 秒、纳秒分别求差并借位，不在 32 位 long 中保存绝对纳秒时间。 */
+    int64_t elapsed_sec = (int64_t)ts_now.tv_sec - (int64_t)ts_baseline.tv_sec;
+    int64_t elapsed_nsec = (int64_t)ts_now.tv_nsec - (int64_t)ts_baseline.tv_nsec;
+    if (elapsed_nsec < 0) {
+        elapsed_sec--;
+        elapsed_nsec += INT64_C(1000000000);
+    }
     ts_baseline = ts_now;
-    if (elapsed_ns > 500000000L) { /* > 500ms */
-        LOGW("timing: suspicious delay detected (%ld ns) — possible debugging", elapsed_ns);
+    if (elapsed_sec < 0) return JNI_FALSE;
+
+    /* 正常路径低于 50ms；500ms 即超过 10 倍，且无需做可能溢出的秒转纳秒乘法。 */
+    if (elapsed_sec > 0 || elapsed_nsec > INT64_C(500000000)) {
+        LOGW("timing: suspicious delay detected (%lld s %lld ns) — possible debugging",
+             (long long)elapsed_sec, (long long)elapsed_nsec);
         return JNI_TRUE;
     }
     return JNI_FALSE;
+}
+
+/* H3：so 一加载就记录 .text 基线并锁定 RX，不等 Java 层首次调用。 */
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    crc32_init();
+    record_baseline_if_needed();
+    uintptr_t start;
+    size_t len;
+    if (find_self_text("libmbpu_security.so", &start, &len) == 0 && len > 0) {
+        uintptr_t page_start = start & ~(uintptr_t)0xFFF;
+        mprotect((void *)page_start, len + (start - page_start), PROT_READ | PROT_EXEC);
+    }
+    return JNI_VERSION_1_6;
 }
