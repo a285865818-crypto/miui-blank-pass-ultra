@@ -42,8 +42,24 @@ final class Hooks {
      * 记下原始完整数组；系统回调 onRequestPermissionsResult 时按原位补回 GRANTED。
      * 键用弱引用，Activity 销毁后自动释放，不会泄漏。
      */
-    private static final java.util.Map<Object, java.util.Map<Integer, String[]>> PENDING_MANAGED =
+    private static final java.util.Map<Object, java.util.Map<Integer, PendingPerm>> PENDING_MANAGED =
             java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /**
+     * A8：一次混合权限请求的原始完整数组 + 其中由本模块接管的权限集合。
+     * 合并结果时必须只对**受管**权限强制 GRANTED——上一版靠「系统没返回就补 GRANTED」，
+     * 系统一旦连受管权限也问了并回 DENIED，合并后仍是 DENIED，与 checkSelfPermission
+     * 的伪 GRANTED 继续矛盾，等于没修。
+     */
+    private static final class PendingPerm {
+        final String[] perms;
+        final java.util.Set<String> managed;
+
+        PendingPerm(String[] perms, java.util.Set<String> managed) {
+            this.perms = perms;
+            this.managed = managed;
+        }
+    }
     /** 安装成功/失败的 hook 数，用于诊断面板回传。 */
     private int okCount;
     private int failCount;
@@ -270,36 +286,21 @@ final class Hooks {
                 postResult((android.app.Activity) self, perms, results, requestCode);
                 return null;
             }
-            // A8 fix: mixed requests (managed + unmanaged in one batch) used to go straight
-            // to the system, so managed perms came back with their real DENIED result while
-            // checkSelfPermission claimed GRANTED - a contradiction apps can wedge on.
-            // Forward only the unmanaged subset to the system, then merge results.
+            // 一个受管权限都没有：与本模块无关，原样交给系统。
             if (toGrant.isEmpty()) return chain.proceed();
-            if (toAsk.isEmpty()) {
-                int[] results = new int[perms.length];
-                java.util.Arrays.fill(results, PackageManager.PERMISSION_GRANTED);
-                postResult((android.app.Activity) self, perms, results, requestCode);
-                return null;
-            }
-            // 混合请求：受管子集直接回调 GRANTED（独立 requestCode 空间不复用），
-            // 非受管子集交给系统。系统回调 onRequestPermissionsResult 时由下方
-            // filterActivityResult hook 把受管权限按原位补成 GRANTED。
-            java.util.Map<Integer, String[]> managedByCode = PENDING_MANAGED.get(self);
+            // 混合请求：**不裁改请求参数**，完整数组原样交给系统。
+            // 只登记受管集合，等结果回调时把这些权限的值覆盖成 GRANTED。
+            //
+            // 为什么不摘掉受管权限：结果覆盖 hook 的是 Activity 基类方法，而目标应用
+            // 几乎都会 override onRequestPermissionsResult（且不一定调 super）。一旦
+            // hook 不生效，裁短数组会让应用收到长度不符的结果、索引错位，比原来的
+            // 「自检 GRANTED / 回调 DENIED」更糟。保持数组完整 = 最坏也退回到原行为。
+            java.util.Map<Integer, PendingPerm> managedByCode = PENDING_MANAGED.get(self);
             if (managedByCode == null) {
                 managedByCode = new java.util.HashMap<>();
                 PENDING_MANAGED.put(self, managedByCode);
             }
-            managedByCode.put(requestCode, perms);
-            // 直接改原始参数：只把非受管子集发给系统。
-            // getArgs() 的可变性不作保证，改写失败就退回系统行为，不能崩宿主。
-            String[] askArr = toAsk.toArray(new String[0]);
-            try {
-                chain.getArgs().set(0, askArr);
-            } catch (Throwable t) {
-                { java.util.Map<Integer, String[]> m0 = PENDING_MANAGED.get(self);
-                    if (m0 != null) m0.remove(requestCode); }
-                return chain.proceed();
-            }
+            managedByCode.put(requestCode, new PendingPerm(perms, new java.util.HashSet<>(toGrant)));
             return chain.proceed();
         }, false);
         // 结果回调：把受管权限的 GRANTED 按原位合入，保证与 checkSelfPermission 一致。
@@ -307,11 +308,11 @@ final class Hooks {
                 int.class, String[].class, int[].class);
         hook(activityResult, chain -> {
             Object selfObj = chain.getThisObject();
-            java.util.Map<Integer, String[]> byCode = PENDING_MANAGED.get(selfObj);
+            java.util.Map<Integer, PendingPerm> byCode = PENDING_MANAGED.get(selfObj);
             if (byCode == null) return chain.proceed();
             int requestCode = ((Number) chain.getArg(0)).intValue();
-            String[] original = byCode.get(requestCode);
-            if (original == null) return chain.proceed();
+            PendingPerm pending = byCode.get(requestCode);
+            if (pending == null) return chain.proceed();
             String[] actualPerms = (String[]) chain.getArg(1);
             int[] actualResults = (int[]) chain.getArg(2);
             if (actualPerms == null || actualResults == null) return chain.proceed();
@@ -319,15 +320,20 @@ final class Hooks {
             for (int i = 0; i < actualPerms.length && i < actualResults.length; i++) {
                 actualMap.put(actualPerms[i], actualResults[i]);
             }
-            String[] mergedPerms = original;
-            int[] mergedResults = new int[original.length];
-            for (int i = 0; i < original.length; i++) {
-                Integer actual = actualMap.get(original[i]);
-                mergedResults[i] = actual != null ? actual : PackageManager.PERMISSION_GRANTED;
+            int[] mergedResults = new int[pending.perms.length];
+            for (int i = 0; i < pending.perms.length; i++) {
+                String perm = pending.perms[i];
+                if (perm != null && pending.managed.contains(perm)) {
+                    // 受管权限一律伪授予，与 checkSelfPermission 保持一致。
+                    mergedResults[i] = PackageManager.PERMISSION_GRANTED;
+                } else {
+                    Integer actual = perm == null ? null : actualMap.get(perm);
+                    mergedResults[i] = actual != null ? actual : PackageManager.PERMISSION_DENIED;
+                }
             }
             byCode.remove(requestCode);
             try {
-                chain.getArgs().set(1, mergedPerms);
+                chain.getArgs().set(1, pending.perms);
                 chain.getArgs().set(2, mergedResults);
             } catch (Throwable t) {
                 return chain.proceed();
@@ -359,19 +365,13 @@ final class Hooks {
             }
             if (toGrant.isEmpty()) return chain.proceed();
             if (!toAsk.isEmpty()) {
-                java.util.Map<Integer, String[]> managedByCode = PENDING_MANAGED.get(self);
+                // 与 Activity 分支同策略：不裁改请求参数，只登记受管集合并原样 proceed。
+                java.util.Map<Integer, PendingPerm> managedByCode = PENDING_MANAGED.get(self);
                 if (managedByCode == null) {
                     managedByCode = new java.util.HashMap<>();
                     PENDING_MANAGED.put(self, managedByCode);
                 }
-                managedByCode.put(requestCode, perms);
-                try {
-                    chain.getArgs().set(0, toAsk.toArray(new String[0]));
-                } catch (Throwable t) {
-                    { java.util.Map<Integer, String[]> m0 = PENDING_MANAGED.get(self);
-                    if (m0 != null) m0.remove(requestCode); }
-                    return chain.proceed();
-                }
+                managedByCode.put(requestCode, new PendingPerm(perms, new java.util.HashSet<>(toGrant)));
                 return chain.proceed();
             }
             if (perms.length == 0) return chain.proceed();
@@ -400,11 +400,11 @@ final class Hooks {
         // Fragment 结果回调合并（反射 invoke，保持原有风格）。
         hook(onResult, chain -> {
             Object selfObj = chain.getThisObject();
-            java.util.Map<Integer, String[]> byCode = PENDING_MANAGED.get(selfObj);
+            java.util.Map<Integer, PendingPerm> byCode = PENDING_MANAGED.get(selfObj);
             if (byCode == null) return chain.proceed();
             int requestCode = ((Number) chain.getArg(0)).intValue();
-            String[] original = byCode.get(requestCode);
-            if (original == null) return chain.proceed();
+            PendingPerm pending = byCode.get(requestCode);
+            if (pending == null) return chain.proceed();
             String[] actualPerms = (String[]) chain.getArg(1);
             int[] actualResults = (int[]) chain.getArg(2);
             if (actualPerms == null || actualResults == null) return chain.proceed();
@@ -412,14 +412,19 @@ final class Hooks {
             for (int i = 0; i < actualPerms.length && i < actualResults.length; i++) {
                 actualMap.put(actualPerms[i], actualResults[i]);
             }
-            int[] mergedResults = new int[original.length];
-            for (int i = 0; i < original.length; i++) {
-                Integer actual = actualMap.get(original[i]);
-                mergedResults[i] = actual != null ? actual : PackageManager.PERMISSION_GRANTED;
+            int[] mergedResults = new int[pending.perms.length];
+            for (int i = 0; i < pending.perms.length; i++) {
+                String perm = pending.perms[i];
+                if (perm != null && pending.managed.contains(perm)) {
+                    mergedResults[i] = PackageManager.PERMISSION_GRANTED;
+                } else {
+                    Integer actual = perm == null ? null : actualMap.get(perm);
+                    mergedResults[i] = actual != null ? actual : PackageManager.PERMISSION_DENIED;
+                }
             }
             byCode.remove(requestCode);
             try {
-                chain.getArgs().set(1, original);
+                chain.getArgs().set(1, pending.perms);
                 chain.getArgs().set(2, mergedResults);
             } catch (Throwable t) {
                 return chain.proceed();
@@ -1044,11 +1049,11 @@ final class Hooks {
                     try {
                         for (Object a : chain.getArgs()) {
                             if (a instanceof android.app.PendingIntent) {
-                                ((android.app.PendingIntent) a).send(2 /* RESULT_ERROR_GENERIC_FAILURE */);
+                                ((android.app.PendingIntent) a).send(1 /* SmsManager.RESULT_ERROR_GENERIC_FAILURE */);
                             } else if (a instanceof java.util.ArrayList) {
                                 for (Object item : (java.util.ArrayList<?>) a) {
                                     if (item instanceof android.app.PendingIntent) {
-                                        ((android.app.PendingIntent) item).send(2);
+                                        ((android.app.PendingIntent) item).send(1);
                                     }
                                 }
                             }
@@ -1086,20 +1091,18 @@ final class Hooks {
                         if (callback != null) {
                             final Object cb = callback;
                             Runnable r = () -> {
-                                android.database.CursorWindow window = null;
                                 try {
-                                    window = new android.database.CursorWindow("mbpu");
-                                    for (java.lang.reflect.Method cm : cb.getClass().getDeclaredMethods()) {
-                                        Class<?>[] pts = cm.getParameterTypes();
-                                        if (pts.length == 1 && android.database.CursorWindow.class.isAssignableFrom(pts[0])) {
-                                            cm.setAccessible(true);
-                                            cm.invoke(cb, window);
-                                            break;
-                                        }
+                                    // CursorWindow 交由回调接收方负责 close（系统约定），
+                                    // 这里提前 close 会让对方读到已释放的窗口而崩溃。
+                                    android.database.CursorWindow window =
+                                            new android.database.CursorWindow("mbpu");
+                                    java.lang.reflect.Method target =
+                                            findCursorWindowCallback(cb.getClass());
+                                    if (target != null) {
+                                        target.setAccessible(true);
+                                        target.invoke(cb, window);
                                     }
                                 } catch (Throwable ignored) {
-                                } finally {
-                                    if (window != null) try { window.close(); } catch (Throwable ignored) {}
                                 }
                             };
                             if (executor != null) ((java.util.concurrent.Executor) executor).execute(r); else r.run();
@@ -1120,7 +1123,7 @@ final class Hooks {
                     try {
                         for (Object a : chain.getArgs()) {
                             if (a instanceof android.app.PendingIntent) {
-                                ((android.app.PendingIntent) a).send(2 /* RESULT_ERROR_GENERIC_FAILURE */);
+                                ((android.app.PendingIntent) a).send(1 /* SmsManager.RESULT_ERROR_GENERIC_FAILURE */);
                             }
                         }
                     } catch (Throwable ignored) {
@@ -1488,6 +1491,27 @@ final class Hooks {
         } catch (Throwable ignored) {
             // 投递失败不影响 Future 本身，调用方仍可走 getResult()。
         }
+    }
+
+    /**
+     * A3：找 FinancialSmsCallback 的 CursorWindow 回调方法。
+     * 实现类常是 lambda，getDeclaredMethods() 里根本没有接口方法，
+     * 必须沿接口与父类向上找。
+     */
+    private static java.lang.reflect.Method findCursorWindowCallback(Class<?> cls) {
+        for (Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                Class<?>[] pts = m.getParameterTypes();
+                if (pts.length == 1 && android.database.CursorWindow.class.isAssignableFrom(pts[0])) {
+                    return m;
+                }
+            }
+            for (Class<?> itf : c.getInterfaces()) {
+                java.lang.reflect.Method found = findCursorWindowCallback(itf);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     /** 已取消的账户 Future：getResult() 与系统取消操作一致抛 OperationCanceledException。 */

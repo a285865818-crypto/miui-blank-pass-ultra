@@ -1013,7 +1013,7 @@ private fun exportLog(
         context.contentResolver.openOutputStream(doc)?.use { out ->
             out.write(text.toByteArray())
         } ?: throw IllegalStateException("open failed")
-        pruneCustomExports(context, tree)
+        pruneCustomExports(context, tree, name)
         return "${displayTreeName(context, tree)}/$name"
     }
 
@@ -1026,12 +1026,12 @@ private fun exportLog(
     context.contentResolver.openOutputStream(uri)?.use { out ->
         out.write(text.toByteArray())
     } ?: throw IllegalStateException("open failed")
-    pruneDownloadExports(context)
+    pruneDownloadExports(context, name)
     return name
 }
 
 /** 下载目录只保留最近 10 个导出文件；删除失败不影响导出结果。 */
-private fun pruneDownloadExports(context: Context) {
+private fun pruneDownloadExports(context: Context, keepName: String) {
     runCatching {
         val projection = arrayOf(
             MediaStore.Downloads._ID,
@@ -1049,7 +1049,10 @@ private fun pruneDownloadExports(context: Context) {
             var index = 0
             while (cursor.moveToNext()) {
                 // H4：下载目录同样只删本应用完整格式的文件，不碰用户的同前缀文件。
-                if (!EXPORT_NAME_RE.matches(cursor.getString(nameCol) ?: "")) continue
+                val displayName = cursor.getString(nameCol) ?: ""
+                if (!EXPORT_NAME_RE.matches(displayName)) continue
+                // 本次刚导出的文件绝不删：时钟回拨或同秒连导时它可能排在尾部。
+                if (displayName == keepName) continue
                 if (index++ >= EXPORT_KEEP_COUNT) {
                     val uri = ContentUris.withAppendedId(
                         MediaStore.Downloads.EXTERNAL_CONTENT_URI,
@@ -1069,7 +1072,7 @@ private fun pruneDownloadExports(context: Context) {
 private val EXPORT_NAME_RE = Regex("^mbpu-log-\\d{8}-\\d{6}\\.txt$")
 
 /** 自定义 SAF 目录同样只保留最近 10 个。 */
-private fun pruneCustomExports(context: Context, tree: String) {
+private fun pruneCustomExports(context: Context, tree: String, keepName: String) {
     runCatching {
         val treeUri = Uri.parse(tree)
         val parent = DocumentsContract.buildChildDocumentsUriUsingTree(
@@ -1095,7 +1098,7 @@ private fun pruneCustomExports(context: Context, tree: String) {
                 // H4 修复：只认本应用生成的完整文件名格式（mbpu-log-<yyyyMMdd-HHmmss>.txt）。
                 // 原来按任意前缀匹配，用户目录里自己命名的 mbpu-log-important.txt 会被
                 // 连带删除——SAF 写授权下这是真实的用户数据丢失。
-                if (EXPORT_NAME_RE.matches(docName)) docs.add(docId to docName)
+                if (EXPORT_NAME_RE.matches(docName) && docName != keepName) docs.add(docId to docName)
             }
         }
         docs.sortedByDescending { it.second }.drop(EXPORT_KEEP_COUNT).forEach { (id, _) ->
