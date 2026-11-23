@@ -48,13 +48,20 @@ cd "$ROOT"
 # keytool 输出是大写 + 冒号分隔的 96 字符，直接填进来会让两层校验以不同规则失效。
 # 这里在构建前就给出可读的告警，而不是让用户对着闪退猜。
 if [ -f local.properties ]; then
-    _sig=$(sed -n 's/^EXPECTED_SIG_SHA256=//p' local.properties | head -1 | tr -d '[:space:]' | tr -d ':' | tr 'A-Z' 'a-z')
+    # A9 fix: Java Properties tolerates leading whitespace before the key, so the old
+    # exact-prefix match could be bypassed. Normalize the same way as the runtime does.
+    _sig=$(sed -n 's/^[[:space:]]*EXPECTED_SIG_SHA256[[:space:]]*=//p' local.properties | head -1 | tr -d '[:space:]' | tr -d ':' | tr 'A-Z' 'a-z')
     # R10：长度与字符集都校验。64 位但含非 hex 字符的笔误以前不告警，
     # 运行时必然校验失败（UI 杀进程、hook 全拒载），极难排查。
     if [ -n "$_sig" ] && { [ "${#_sig}" -ne 64 ] || [ -n "$(printf '%s' "$_sig" | tr -d '0-9a-f')" ]; }; then
-        echo "WARNING: local.properties 的 EXPECTED_SIG_SHA256 不是合法的 64 位小写 hex。" >&2
-        echo "         取值请去掉冒号并转小写，例如：" >&2
-        echo "         keytool ... | grep SHA256 | sed 's/.*: //;s/://g' | tr 'A-Z' 'a-z'" >&2
+        echo "ERROR: local.properties 的 EXPECTED_SIG_SHA256 不是合法的 64 位小写 hex。" >&2
+        echo "       非法非空值会让运行时签名校验直接拒绝运行，不能静默降级。" >&2
+        echo "       取值请去掉冒号并转小写，例如：" >&2
+        echo "       keytool ... | grep SHA256 | sed 's/.*: //;s/://g' | tr 'A-Z' 'a-z'" >&2
+        # A9 fix: release 构建遇到非法非空值必须中止，debug 只警告（方便开源调试）。
+        if [ "$VARIANT" = "release" ]; then
+            exit 1
+        fi
     fi
     unset _sig
 fi

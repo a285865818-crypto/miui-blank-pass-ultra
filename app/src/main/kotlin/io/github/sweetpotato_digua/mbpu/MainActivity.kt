@@ -148,6 +148,8 @@ fun AppRoot(store: Store, onExit: () -> Unit) {
                 pullToRefreshState = pullToRefreshState,
                 onRefresh = ::refreshHome,
                 onOpenSettings = { fromRight -> nav.push(Route.Settings, fromRight) },
+                // L2：把「当前栈顶是否 Home」传给主页，被覆盖时停掉 root 轮询。
+                isHomeTop = { nav.current == Route.Home },
             )
 
             Route.Settings -> SettingsScreen(
@@ -172,6 +174,7 @@ fun AppRoot(store: Store, onExit: () -> Unit) {
                 onOpenTheme = { fromRight -> nav.push(Route.Theme, fromRight) },
                 onOpenLanguage = { fromRight -> nav.push(Route.Language, fromRight) },
                 onOpenAbout = { fromRight -> nav.push(Route.About, fromRight) },
+                onOpenSponsor = { fromRight -> nav.push(Route.Sponsor, fromRight) },
                 onOpenDebug = { fromRight -> nav.push(Route.Debug, fromRight) },
             )
 
@@ -181,6 +184,7 @@ fun AppRoot(store: Store, onExit: () -> Unit) {
             )
             Route.Language -> LanguagePage(store = store, onBack = { nav.pop() })
             Route.About -> AboutScreen(store = store, onBack = { nav.pop() })
+            Route.Sponsor -> SponsorScreen(onBack = { nav.pop() })
             Route.Debug -> DebugScreen(store = store, onBack = { nav.pop() })
         }
     }

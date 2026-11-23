@@ -88,7 +88,10 @@ public final class Security {
      */
     static String normalizeHex(String s) {
         if (s == null) return "";
-        String t = s.trim().replace(":", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
+        // A9 fix: strip ALL whitespace (tabs/newlines included), matching build.sh's
+        // tr -d '[:space:]'. Previously only spaces were removed, so a value the build
+        // script accepted could be judged invalid at runtime and silently skip the check.
+        String t = s.trim().replaceAll("\\s+", "").replace(":", "").toLowerCase(java.util.Locale.ROOT);
         // R10：长度 64 但含非 hex 字符（配置笔误）也必须判非法。否则原样进入比对，
         // 运行时必然不匹配：UI 杀进程、hook 全拒载，而构建期毫无告警。
         if (t.length() != 64) return "";
@@ -193,9 +196,17 @@ public final class Security {
         //    期望值来自 BuildConfig.EXPECTED_SIG_SHA256（local.properties 注入，不入库）。
         //    没配置就跳过——开源版本让任何人克隆后都能直接构建运行。
         //    期望值与实际值都过 normalizeHex，规则与 ModuleIntegrity、native 层一致（H10）。
-        String expected = normalizeHex(BuildConfig.EXPECTED_SIG_SHA256);
-        if (expected.isEmpty()) {
-            android.util.Log.w("MBPU_SEC", "EXPECTED_SIG_SHA256 not configured or invalid, signature check skipped");
+        String rawExpected = BuildConfig.EXPECTED_SIG_SHA256;
+        String expected = normalizeHex(rawExpected);
+        // A9 fix: distinguish "not configured" (open-source build, allowed) from
+        // "configured but malformed" (must not silently disable the check).
+        boolean malformed = rawExpected != null && !rawExpected.trim().isEmpty() && expected.isEmpty();
+        if (malformed) {
+            android.util.Log.e("MBPU_SEC", "EXPECTED_SIG_SHA256 is set but malformed, killing process");
+            Process.killProcess(Process.myPid());
+            System.exit(1);
+        } else if (expected.isEmpty()) {
+            android.util.Log.w("MBPU_SEC", "EXPECTED_SIG_SHA256 not configured, signature check skipped");
         } else {
             String sigHash = computeSigHash(context);
             if (sigHash == null) {

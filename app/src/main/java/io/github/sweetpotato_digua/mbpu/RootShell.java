@@ -93,6 +93,59 @@ final class RootShell {
     }
 
     /**
+     * M6/M7 fix: bounded output read that keeps the TAIL.
+     * readOutput keeps the head and drops the tail, but log semantics are "newest is
+     * tail" - over 64 KiB the newest lines were exactly what got dropped while the UI
+     * claimed to show the recent log. This drops the head instead.
+     */
+    private static String[] readOutputTail(Process process, int maxChars) throws Exception {
+        StringBuilder out = new StringBuilder();
+        boolean truncated = false;
+        try (java.io.Reader reader = new InputStreamReader(
+                process.getInputStream(), StandardCharsets.UTF_8)) {
+            char[] buf = new char[4096];
+            int n;
+            while ((n = reader.read(buf)) != -1) {
+                out.append(buf, 0, n);
+                if (out.length() > maxChars) {
+                    out.delete(0, out.length() - maxChars);
+                    truncated = true;
+                }
+            }
+        }
+        return new String[]{out.toString().trim(), Boolean.toString(truncated)};
+    }
+
+    /** Same as exec, but keeps the tail when output exceeds the limit. Use for logs. */
+    static Result execTail(String script, int maxChars) {
+        if (script == null || script.trim().isEmpty()) return new Result(-1, "empty command");
+        Process process = null;
+        Future<String[]> output = null;
+        try {
+            process = new ProcessBuilder("su", "-c", script).redirectErrorStream(true).start();
+            Process running = process;
+            int limit = Math.max(maxChars, 4096);
+            output = OUTPUT_READER.submit((Callable<String[]>) () -> readOutputTail(running, limit));
+            if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                return new Result(124, "su session timed out after " + TIMEOUT_SECONDS + "s");
+            }
+            String[] read = output.get(OUTPUT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            return new Result(process.exitValue(), read[0], Boolean.parseBoolean(read[1]));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new Result(-1, "interrupted");
+        } catch (TimeoutException e) {
+            return new Result(124, "output read timed out after " + OUTPUT_TIMEOUT_SECONDS + "s");
+        } catch (ExecutionException e) {
+            return new Result(-1, "output read failed: " + e.getCause());
+        } catch (Exception e) {
+            return new Result(-1, "exec failed: " + e);
+        } finally {
+            if (process != null) killAndReap(process);
+        }
+    }
+
+    /**
      * 终止进程并回收资源。
      * 只 destroy 直接 su 进程不够，其子 shell / am 可能还活着；同时必须关闭三个流，
      * 否则阻塞在读取上的线程永远不会退出，反复超时就会累积进程与线程。
@@ -216,24 +269,73 @@ final class RootShell {
         return runningOf(java.util.Collections.singleton(pkg)).contains(pkg);
     }
 
-    /** 枚举主进程与 pkg:sub 子进程；ps 失败时抛错，绝不误报“全部未运行”。 */
+    /**
+     * 枚举主进程与 pkg:sub 子进程。
+     * M11 修复：原先只依赖 `ps -A -o NAME=`——toybox 上它可能成功退出但输出为空，
+     * NAME 若取自 15 字符 comm 还会截断包名，两者都导致假阴性（跳过 force-stop）。
+     * 现在以 /proc/[pid]/cmdline 为准（完整包名 + :子进程），ps 只做补充，取并集。
+     */
     static Set<String> runningOf(Set<String> packages) {
         Set<String> valid = new LinkedHashSet<>();
         for (String pkg : packages) {
             if (validPackage(pkg)) valid.add(pkg);
         }
         if (valid.isEmpty()) return new LinkedHashSet<>();
-        Result result = exec("ps -A -o NAME=");
-        if (!result.ok()) throw new IllegalStateException("ps failed: " + result.output);
-        if (result.truncated) throw new IllegalStateException("ps output truncated");
-
         Set<String> running = new LinkedHashSet<>();
-        for (String line : result.output.split("\\n")) {
-            String name = line.trim();
-            int colon = name.indexOf(':');
-            String pkg = colon >= 0 ? name.substring(0, colon) : name;
-            if (valid.contains(pkg)) running.add(pkg);
+
+        // 主通道：/proc 扫描。Java File API 直读，不拼 shell，无注入面。
+        try {
+            java.io.File proc = new java.io.File("/proc");
+            String[] pids = proc.list();
+            if (pids != null) {
+                int scanned = 0;
+                for (String pid : pids) {
+                    if (scanned++ >= 4096) break;
+                    if (pid.length() == 0 || pid.charAt(0) < '0' || pid.charAt(0) > '9') continue;
+                    byte[] raw = readCmdline(new java.io.File(proc, pid + "/cmdline"));
+                    if (raw == null) continue;
+                    int len = 0;
+                    while (len < raw.length && raw[len] != 0) len++;
+                    if (len == 0) continue;
+                    String name = new String(raw, 0, len, StandardCharsets.UTF_8);
+                    int colon = name.indexOf(':');
+                    String pkg = colon >= 0 ? name.substring(0, colon) : name;
+                    if (valid.contains(pkg)) {
+                        running.add(pkg);
+                        if (running.size() == valid.size()) break;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // /proc 读不动就退回 ps 补充通道。
+        }
+
+        // 补充通道：ps。输出为空/截断时不抛错也不当“全部未运行”，只是没补充信息。
+        try {
+            Result result = exec("ps -A -o NAME=");
+            if (result.ok() && !result.truncated) {
+                for (String line : result.output.split("\n")) {
+                    String name = line.trim();
+                    int colon = name.indexOf(':');
+                    String pkg = colon >= 0 ? name.substring(0, colon) : name;
+                    if (valid.contains(pkg)) running.add(pkg);
+                }
+            }
+        } catch (Throwable ignored) {
         }
         return running;
+    }
+
+    /** 读取 /proc/[pid]/cmdline（NUL 分隔），失败返回 null。 */
+    private static byte[] readCmdline(java.io.File file) {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+            byte[] buf = new byte[256];
+            int off = 0;
+            int n;
+            while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
+            return off > 0 ? buf : null;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 }

@@ -29,3 +29,8 @@ fixblend.py
 
 # 本地推送脚本（含账号信息，仅本地使用）
 push_to_github.sh
+
+# 审查与统计的临时产物，不属于发布内容
+.audit/
+.stats_raw.json
+.stats_history.json

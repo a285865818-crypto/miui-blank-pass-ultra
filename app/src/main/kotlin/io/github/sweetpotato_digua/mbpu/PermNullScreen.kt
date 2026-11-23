@@ -220,6 +220,7 @@ internal fun PermNullScreen(
     pullToRefreshState: PullToRefreshState,
     onRefresh: () -> Unit,
     onOpenSettings: (Boolean) -> Unit,
+    isHomeTop: () -> Boolean = { true },
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -309,11 +310,17 @@ internal fun PermNullScreen(
         selected = emptySet()
     }
 
+    // M8：masks 全量重建的代际，防止旧快照晚到覆盖 updateMask 刚写的新状态。
+    val masksGeneration = remember { java.util.concurrent.atomic.AtomicInteger(0) }
+
     /** 全量重建：仅在批次操作 / 服务重连时使用。 */
     fun reloadMasks() {
+        // M8 修复：异步快照可能晚于用户刚切换的开关返回，旧快照覆盖新状态。
+        // 单调递增代际 + 提交前校验，过期结果直接丢弃（与 loadGeneration 同思路）。
+        val gen = masksGeneration.incrementAndGet()
         scope.launch {
             val snapshot = withContext(Dispatchers.IO) { store.snapshot() }
-            masks = snapshot
+            if (gen == masksGeneration.get()) masks = snapshot
         }
     }
 
@@ -373,8 +380,10 @@ internal fun PermNullScreen(
             }
         }
         // 重新开启的目标不再属于「待卸载」，否则重启计划会无谓强停已启用的应用。
+        // M9 修复：只清写入成功的；失败目标的 pendingStop 保留，否则后续重启计划
+        // 会把「配置没生效」当成「已生效」处理，状态提示与持久状态不一致。
         withContext(Dispatchers.IO) {
-            store.clearPendingStop(targets.toSet())
+            store.clearPendingStop(targets.toSet() - failed.toSet())
         }
         reloadMasks()
         val ok = targets.size - failed.size
@@ -677,6 +686,12 @@ internal fun PermNullScreen(
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             var interval = 3_000L
             while (true) {
+                // L2 修复：Activity RESUMED 不等于主页可见——进入设置页后 Home 仍在
+                // 栈下保持组合、Activity 仍 RESUMED。被覆盖时不 fork root shell，只等待。
+                if (!isHomeTop()) {
+                    delay(3_000L)
+                    continue
+                }
                 val stats = withContext(Dispatchers.IO) {
                     runCatching { readHookStats() }.getOrNull()
                 }
@@ -2102,8 +2117,13 @@ internal suspend fun loadInstalledApps(context: Context): List<AppEntry> = corou
         pm.getInstalledPackages(0)
     }.getOrThrow()
 
+    // L5 修复：注释承诺「并行度固定 4」但实现是每 48 包一个 async 全并发，
+    // 冷启动时 PM/Binder 与 IO 线程瞬时争用。用 Semaphore 真正限住 4 并发。
+    val parsePermits = kotlinx.coroutines.sync.Semaphore(4)
     val entries = packages.chunked(48).map { chunk ->
         async(Dispatchers.IO) {
+            parsePermits.acquire()
+            try {
             chunk.mapNotNull { pkg ->
                 val info = pkg.applicationInfo ?: return@mapNotNull null
                 // 模块自己不在列表里出现：它永远不会被 hook 注入，
@@ -2120,6 +2140,9 @@ internal suspend fun loadInstalledApps(context: Context): List<AppEntry> = corou
                         .ifEmpty { info.packageName },
                     changedAt = 0L,
                 )
+            }
+            } finally {
+                parsePermits.release()
             }
         }
     }.awaitAll().flatten()
@@ -2142,24 +2165,31 @@ private fun describeService(context: Context): String {
 }
 
 /** 检测本应用是否已获得 root。调用会阻塞，必须在 IO 线程执行。 */
-/** root 检测结果缓存 10 秒：避免诊断页每 2 秒都 fork 一次 su。 */
-private var rootCache: Pair<Long, String>? = null
+/**
+ * root 检测结果缓存 10 秒：避免诊断页每 2 秒都 fork 一次 su。
+ * L3 修复：缓存结构化结果（三态 + 退出码字符串）而不是已本地化的文案，
+ * 否则缓存期内切语言会把旧语言文案永久留在界面上。
+ */
+private var rootCache: Pair<Long, Triple<Boolean, Boolean, String>>? = null
 
 internal fun describeRoot(context: Context): String {
-    rootCache?.let { (at, value) ->
-        if (SystemClock.elapsedRealtime() - at < 10_000) return value
+    val cached = rootCache?.takeIf { SystemClock.elapsedRealtime() - it.first < 10_000 }
+    val (granted, exitOk, output) = if (cached != null) {
+        cached.second
+    } else {
+        val result = RootShell.exec("id -u")
+        val triple = Triple(
+            result.output.trim() == "0",
+            result.exitCode == 0,
+            result.output.trim(),
+        )
+        rootCache = SystemClock.elapsedRealtime() to triple
+        triple
     }
-    return describeRootUncached(context).also {
-        rootCache = SystemClock.elapsedRealtime() to it
-    }
-}
-
-private fun describeRootUncached(context: Context): String {
-    val result = RootShell.exec("id -u")
+    // 每次用当前语言格式化，缓存只挡 su 调用。
     return when {
-        result.output.trim() == "0" -> context.getString(R.string.root_granted)
-        result.exitCode == 0 ->
-            context.getString(R.string.root_denied_code, result.output.trim())
+        granted -> context.getString(R.string.root_granted)
+        exitOk -> context.getString(R.string.root_denied_code, output)
         else -> context.getString(R.string.root_denied)
     }
 }

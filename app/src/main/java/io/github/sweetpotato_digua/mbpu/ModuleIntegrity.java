@@ -67,7 +67,10 @@ final class ModuleIntegrity {
      */
     private static String normalizeHex(String s) {
         if (s == null) return "";
-        String t = s.trim().replace(":", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
+        // A9 fix: strip ALL whitespace (tabs/newlines included), matching build.sh's
+        // tr -d '[:space:]'. Previously only spaces were removed, so a value the build
+        // script accepted could be judged invalid at runtime and silently skip the check.
+        String t = s.trim().replaceAll("\\s+", "").replace(":", "").toLowerCase(java.util.Locale.ROOT);
         // R10：长度 64 但含非 hex 字符（配置笔误）也必须判非法。否则原样进入比对，
         // 运行时必然不匹配：UI 杀进程、hook 全拒载，而构建期毫无告警。
         if (t.length() != 64) return "";
@@ -81,7 +84,14 @@ final class ModuleIntegrity {
 
     private static Boolean check(XposedInterface xposed) {
         // 期望值过 normalizeHex：去冒号、转小写，长度非 64 视为未配置（H10）。
-        String expected = normalizeHex(BuildConfig.EXPECTED_SIG_SHA256);
+        String rawExpected = BuildConfig.EXPECTED_SIG_SHA256;
+        String expected = normalizeHex(rawExpected);
+        // A9 fix: a set-but-malformed expectation must not fall through to the open-source
+        // "skip check" branch - refuse to hook instead of silently disabling the guard.
+        if (rawExpected != null && !rawExpected.trim().isEmpty() && expected.isEmpty()) {
+            android.util.Log.e("MBPU_SEC", "EXPECTED_SIG_SHA256 malformed, refuse to hook");
+            return Boolean.FALSE;
+        }
         // 未配置期望值：源码自行编译的产物，无从比对，一律放行。
         if (expected.isEmpty()) {
             return Boolean.TRUE;

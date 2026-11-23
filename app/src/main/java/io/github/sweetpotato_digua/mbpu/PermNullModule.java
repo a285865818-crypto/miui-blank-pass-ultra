@@ -21,6 +21,24 @@ public class PermNullModule extends XposedModule {
     private static final String TAG = "PermNull";
 
     /**
+     * S1：关键系统进程 denylist。任何配置（UI 勾选、备份恢复）都不得对这些包安装 hook。
+     * system_server（包名 android）被伪装授权/返回空数据会导致系统服务内部状态错乱，
+     * SystemUI/电话/短信同理；这类事故恢复成本极高，必须在模块入口硬挡。
+     */
+    static final Set<String> PROTECTED_PACKAGES = Set.of(
+            "android",
+            "com.android.systemui",
+            "com.android.phone",
+            "com.android.mms",
+            "com.android.settings",
+            "com.android.launcher3",
+            "com.miui.home",
+            "com.android.providers.media",
+            "com.android.providers.contacts",
+            "com.android.providers.telephony"
+    );
+
+    /**
      * 已装 hook 的包名（M15/L19：之前按 (pkg, loader 身份) 去重，若两阶段回调给不同 loader
      * 会重复安装；现只按包名去重，loader 只用来定位 hook 目标。
      * 用 Set<String> 避免持有目标 ClassLoader 引用，防止其及其加载的类无法回收）。
@@ -72,6 +90,9 @@ public class PermNullModule extends XposedModule {
     private boolean install(String phase, String pkg, ClassLoader cl) {
         // L18：自身包名不硬编码，跟 applicationId 保持一致（包名迁移时不用再改这里）。
         if (BuildConfig.APPLICATION_ID.equals(pkg)) return true;
+        // S1：关键系统进程硬性排除。误配这些包的 mask 会让 system_server/SystemUI
+        // 拿到伪授权与空数据，可能直接崩到进不了桌面；这条防线不能靠 UI 默认隐藏系统应用。
+        if (PROTECTED_PACKAGES.contains(pkg)) return true;
         if (cl == null) {
             safeLog(Log.WARN, phase + " " + pkg + " classLoader=null");
             return true;

@@ -40,6 +40,7 @@ sealed interface Route {
     data object Theme : Route { override val key = "theme" }
     data object Language : Route { override val key = "language" }
     data object About : Route { override val key = "about" }
+    data object Sponsor : Route { override val key = "sponsor" }
     data object Debug : Route { override val key = "debug" }
 
     companion object {
@@ -48,6 +49,7 @@ sealed interface Route {
             Theme.key -> Theme
             Language.key -> Language
             About.key -> About
+            Sponsor.key -> Sponsor
             Debug.key -> Debug
             else -> Home
         }

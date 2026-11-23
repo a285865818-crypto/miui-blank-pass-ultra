@@ -41,6 +41,7 @@ fun SettingsScreen(
     onOpenTheme: (Boolean) -> Unit,
     onOpenLanguage: (Boolean) -> Unit,
     onOpenAbout: (Boolean) -> Unit,
+    onOpenSponsor: (Boolean) -> Unit,
     onOpenDebug: (Boolean) -> Unit,
 ) {
     // 纯手势元数据不应驱动 Snapshot 重组；普通数组只保存最新触点与实际布局宽度。
@@ -64,6 +65,8 @@ fun SettingsScreen(
     ) { innerPadding ->
         val top = innerPadding.calculateTopPadding()
         val bottom = innerPadding.calculateBottomPadding()
+        // LazyListScope 不是 Composable 上下文，可见性要在组合期先算好。
+        val showSponsor = sponsorVisible()
 
         LazyColumn(
             modifier = Modifier
@@ -117,6 +120,29 @@ fun SettingsScreen(
 
             item {
                 ConfigBackupSection(store = store, onConfigRestored = onConfigRestored)
+            }
+
+            // 赞赏码是微信的，非中文界面扫不动，entry 只在中文下出现。
+            if (showSponsor) {
+                item {
+                    SmallTitle(
+                        text = stringResource(R.string.sponsor_section),
+                        insideMargin = PaddingValues(16.dp, 8.dp),
+                    )
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp)
+                            .padding(bottom = 12.dp),
+                    ) {
+                        ArrowPreference(
+                            title = stringResource(R.string.sponsor),
+                            summary = stringResource(R.string.sponsor_summary),
+                            modifier = Modifier.tapLocator { lastTapX[0] = it },
+                            onClick = { onOpenSponsor(fromRight()) },
+                        )
+                    }
+                }
             }
 
             item {

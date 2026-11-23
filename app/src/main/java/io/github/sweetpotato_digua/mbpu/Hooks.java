@@ -36,6 +36,14 @@ final class Hooks {
     private final String pkg;
     private final int mask;
     private final ClassLoader cl;
+
+    /**
+     * A8：混合权限请求登记表。requestPermissions 把受管权限从系统请求里摘掉后，
+     * 记下原始完整数组；系统回调 onRequestPermissionsResult 时按原位补回 GRANTED。
+     * 键用弱引用，Activity 销毁后自动释放，不会泄漏。
+     */
+    private static final java.util.Map<Object, java.util.Map<Integer, String[]>> PENDING_MANAGED =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
     /** 安装成功/失败的 hook 数，用于诊断面板回传。 */
     private int okCount;
     private int failCount;
@@ -262,20 +270,67 @@ final class Hooks {
                 postResult((android.app.Activity) self, perms, results, requestCode);
                 return null;
             }
-            // N5 修复：混合权限请求不能把无关权限也 DENIED。
-            // 只有「全部权限都受管」才短路并伪授予 GRANTED；
-            // 只要有非受管权限，就交给系统走真实流程（受管权限由后续 hook 拦数据）。
-            boolean allManaged = true;
-            for (String perm : perms) {
-                if (perm != null && !granted.contains(perm)) { allManaged = false; break; }
-            }
-            if (allManaged && perms.length > 0) {
+            // A8 fix: mixed requests (managed + unmanaged in one batch) used to go straight
+            // to the system, so managed perms came back with their real DENIED result while
+            // checkSelfPermission claimed GRANTED - a contradiction apps can wedge on.
+            // Forward only the unmanaged subset to the system, then merge results.
+            if (toGrant.isEmpty()) return chain.proceed();
+            if (toAsk.isEmpty()) {
                 int[] results = new int[perms.length];
-                for (int i = 0; i < perms.length; i++) {
-                    results[i] = PackageManager.PERMISSION_GRANTED;
-                }
+                java.util.Arrays.fill(results, PackageManager.PERMISSION_GRANTED);
                 postResult((android.app.Activity) self, perms, results, requestCode);
                 return null;
+            }
+            // 混合请求：受管子集直接回调 GRANTED（独立 requestCode 空间不复用），
+            // 非受管子集交给系统。系统回调 onRequestPermissionsResult 时由下方
+            // filterActivityResult hook 把受管权限按原位补成 GRANTED。
+            java.util.Map<Integer, String[]> managedByCode = PENDING_MANAGED.get(self);
+            if (managedByCode == null) {
+                managedByCode = new java.util.HashMap<>();
+                PENDING_MANAGED.put(self, managedByCode);
+            }
+            managedByCode.put(requestCode, perms);
+            // 直接改原始参数：只把非受管子集发给系统。
+            // getArgs() 的可变性不作保证，改写失败就退回系统行为，不能崩宿主。
+            String[] askArr = toAsk.toArray(new String[0]);
+            try {
+                chain.getArgs().set(0, askArr);
+            } catch (Throwable t) {
+                { java.util.Map<Integer, String[]> m0 = PENDING_MANAGED.get(self);
+                    if (m0 != null) m0.remove(requestCode); }
+                return chain.proceed();
+            }
+            return chain.proceed();
+        }, false);
+        // 结果回调：把受管权限的 GRANTED 按原位合入，保证与 checkSelfPermission 一致。
+        Method activityResult = find(activity, "onRequestPermissionsResult",
+                int.class, String[].class, int[].class);
+        hook(activityResult, chain -> {
+            Object selfObj = chain.getThisObject();
+            java.util.Map<Integer, String[]> byCode = PENDING_MANAGED.get(selfObj);
+            if (byCode == null) return chain.proceed();
+            int requestCode = ((Number) chain.getArg(0)).intValue();
+            String[] original = byCode.get(requestCode);
+            if (original == null) return chain.proceed();
+            String[] actualPerms = (String[]) chain.getArg(1);
+            int[] actualResults = (int[]) chain.getArg(2);
+            if (actualPerms == null || actualResults == null) return chain.proceed();
+            java.util.Map<String, Integer> actualMap = new java.util.HashMap<>();
+            for (int i = 0; i < actualPerms.length && i < actualResults.length; i++) {
+                actualMap.put(actualPerms[i], actualResults[i]);
+            }
+            String[] mergedPerms = original;
+            int[] mergedResults = new int[original.length];
+            for (int i = 0; i < original.length; i++) {
+                Integer actual = actualMap.get(original[i]);
+                mergedResults[i] = actual != null ? actual : PackageManager.PERMISSION_GRANTED;
+            }
+            byCode.remove(requestCode);
+            try {
+                chain.getArgs().set(1, mergedPerms);
+                chain.getArgs().set(2, mergedResults);
+            } catch (Throwable t) {
+                return chain.proceed();
             }
             return chain.proceed();
         }, false);
@@ -294,12 +349,32 @@ final class Hooks {
             Object self = chain.getThisObject();
             if (self == null) return chain.proceed();
 
-            // N5 修复：Fragment 分支同样只短路「全部受管」的请求，混合请求走系统流程。
-            boolean allManaged = true;
+            // A8：Fragment 与 Activity 同策略——混合请求把受管权限从系统请求里摘掉，
+            // 结果回调时按原位补回 GRANTED；全部受管才直接短路回调。
+            java.util.List<String> toGrant = new java.util.ArrayList<>();
+            java.util.List<String> toAsk = new java.util.ArrayList<>();
             for (String perm : perms) {
-                if (perm != null && !granted.contains(perm)) { allManaged = false; break; }
+                if (perm != null && granted.contains(perm)) toGrant.add(perm);
+                else if (perm != null) toAsk.add(perm);
             }
-            if (!allManaged || perms.length == 0) return chain.proceed();
+            if (toGrant.isEmpty()) return chain.proceed();
+            if (!toAsk.isEmpty()) {
+                java.util.Map<Integer, String[]> managedByCode = PENDING_MANAGED.get(self);
+                if (managedByCode == null) {
+                    managedByCode = new java.util.HashMap<>();
+                    PENDING_MANAGED.put(self, managedByCode);
+                }
+                managedByCode.put(requestCode, perms);
+                try {
+                    chain.getArgs().set(0, toAsk.toArray(new String[0]));
+                } catch (Throwable t) {
+                    { java.util.Map<Integer, String[]> m0 = PENDING_MANAGED.get(self);
+                    if (m0 != null) m0.remove(requestCode); }
+                    return chain.proceed();
+                }
+                return chain.proceed();
+            }
+            if (perms.length == 0) return chain.proceed();
             int[] results = new int[perms.length];
             for (int i = 0; i < perms.length; i++) {
                 results[i] = PackageManager.PERMISSION_GRANTED;
@@ -319,6 +394,35 @@ final class Hooks {
                     return null;
                 }
             } catch (Throwable ignored) {
+            }
+            return chain.proceed();
+        }, false);
+        // Fragment 结果回调合并（反射 invoke，保持原有风格）。
+        hook(onResult, chain -> {
+            Object selfObj = chain.getThisObject();
+            java.util.Map<Integer, String[]> byCode = PENDING_MANAGED.get(selfObj);
+            if (byCode == null) return chain.proceed();
+            int requestCode = ((Number) chain.getArg(0)).intValue();
+            String[] original = byCode.get(requestCode);
+            if (original == null) return chain.proceed();
+            String[] actualPerms = (String[]) chain.getArg(1);
+            int[] actualResults = (int[]) chain.getArg(2);
+            if (actualPerms == null || actualResults == null) return chain.proceed();
+            java.util.Map<String, Integer> actualMap = new java.util.HashMap<>();
+            for (int i = 0; i < actualPerms.length && i < actualResults.length; i++) {
+                actualMap.put(actualPerms[i], actualResults[i]);
+            }
+            int[] mergedResults = new int[original.length];
+            for (int i = 0; i < original.length; i++) {
+                Integer actual = actualMap.get(original[i]);
+                mergedResults[i] = actual != null ? actual : PackageManager.PERMISSION_GRANTED;
+            }
+            byCode.remove(requestCode);
+            try {
+                chain.getArgs().set(1, original);
+                chain.getArgs().set(2, mergedResults);
+            } catch (Throwable t) {
+                return chain.proceed();
             }
             return chain.proceed();
         }, false);
@@ -860,8 +964,29 @@ final class Hooks {
                         return null;
                     });
                 }
-            } else if (n.equals("requestLocationUpdates") || n.equals("requestSingleUpdate")
-                    || n.equals("getCurrentLocation")) {
+            } else if (n.equals("getCurrentLocation")) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.LOCATION);
+                    // A6 fix: getCurrentLocation is void + callback based; no-op leaves the
+                    // Consumer uncalled and callers waiting forever. Complete with null
+                    // (system "no location available" semantics) via the caller's Executor.
+                    try {
+                        Object executor = null;
+                        Object consumer = null;
+                        for (Object a : chain.getArgs()) {
+                            if (executor == null && a instanceof java.util.concurrent.Executor) executor = a;
+                            if (consumer == null && a instanceof java.util.function.Consumer) consumer = a;
+                        }
+                        if (consumer != null) {
+                            final java.util.function.Consumer<Object> c = (java.util.function.Consumer<Object>) consumer;
+                            Runnable r = () -> { try { c.accept(null); } catch (Throwable ignored) {} };
+                            if (executor != null) ((java.util.concurrent.Executor) executor).execute(r); else r.run();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    return null;
+                });
+            } else if (n.equals("requestLocationUpdates") || n.equals("requestSingleUpdate")) {
                 hook(m, chain -> {
                     BlockStats.record(Config.LOCATION);
                     return null;
@@ -913,19 +1038,96 @@ final class Hooks {
                     || n.equals("sendDataMessage")) {
                 hook(m, chain -> {
                     BlockStats.record(Config.SMS);
+                    // A5 fix: keep the send blocked but report generic failure through the
+                    // caller's sent/delivery PendingIntents, otherwise apps waiting on the
+                    // result broadcast stay stuck in "sending..." forever.
+                    try {
+                        for (Object a : chain.getArgs()) {
+                            if (a instanceof android.app.PendingIntent) {
+                                ((android.app.PendingIntent) a).send(2 /* RESULT_ERROR_GENERIC_FAILURE */);
+                            } else if (a instanceof java.util.ArrayList) {
+                                for (Object item : (java.util.ArrayList<?>) a) {
+                                    if (item instanceof android.app.PendingIntent) {
+                                        ((android.app.PendingIntent) item).send(2);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
                     return null;       // no-op：不抛异常，避免崩宿主
                 });
             }
             // N4 修复：SmsManager 的 ICC 读取接口完全没拦，能绕过 ContentResolver
             // 空结果直接读 SIM 卡短信。这些查询返回 List<SmsMessage>，给空列表。
-            if (n.equals("getMessagesFromIcc") || n.equals("getAllMessagesFromIcc")
-                    || n.equals("getSmsMessagesForFinancialApp")) {
+            if (n.equals("getMessagesFromIcc") || n.equals("getAllMessagesFromIcc")) {
                 if (List.class.isAssignableFrom(m.getReturnType())) {
                     hook(m, chain -> {
                         BlockStats.record(Config.SMS);
                         return new java.util.ArrayList<>();
                     });
                 }
+            }
+            // A3 fix: getSmsMessagesForFinancialApp returns void, so the List-return check
+            // above never matched it and real financial SMS content reached the app.
+            if (n.equals("getSmsMessagesForFinancialApp") && m.getReturnType() == void.class) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.SMS);
+                    // Deliver an empty CursorWindow through the caller's Executor so the
+                    // callback-driven API completes with "no messages" instead of hanging.
+                    try {
+                        Object executor = null;
+                        Object callback = null;
+                        for (Object a : chain.getArgs()) {
+                            if (executor == null && a instanceof java.util.concurrent.Executor) executor = a;
+                            if (a != null && !(a instanceof java.util.concurrent.Executor)
+                                    && !(a instanceof android.os.Bundle)) callback = a;
+                        }
+                        if (callback != null) {
+                            final Object cb = callback;
+                            Runnable r = () -> {
+                                android.database.CursorWindow window = null;
+                                try {
+                                    window = new android.database.CursorWindow("mbpu");
+                                    for (java.lang.reflect.Method cm : cb.getClass().getDeclaredMethods()) {
+                                        Class<?>[] pts = cm.getParameterTypes();
+                                        if (pts.length == 1 && android.database.CursorWindow.class.isAssignableFrom(pts[0])) {
+                                            cm.setAccessible(true);
+                                            cm.invoke(cb, window);
+                                            break;
+                                        }
+                                    }
+                                } catch (Throwable ignored) {
+                                } finally {
+                                    if (window != null) try { window.close(); } catch (Throwable ignored) {}
+                                }
+                            };
+                            if (executor != null) ((java.util.concurrent.Executor) executor).execute(r); else r.run();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    return null;
+                });
+                continue;
+            }
+            // A4 fix: downloadMultimediaMessage fetches real MMS content straight from the
+            // telephony service without touching ContentResolver, so it needs its own block.
+            if (n.equals("downloadMultimediaMessage")) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.SMS);
+                    // Report generic failure through the caller's PendingIntent instead of
+                    // silently downloading the real MMS.
+                    try {
+                        for (Object a : chain.getArgs()) {
+                            if (a instanceof android.app.PendingIntent) {
+                                ((android.app.PendingIntent) a).send(2 /* RESULT_ERROR_GENERIC_FAILURE */);
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    return null;
+                });
+                continue;
             }
         }
         log("sms send hooks installed (no-op)");
@@ -1014,6 +1216,34 @@ final class Hooks {
             // 以及它们的 AsUser 变体。getLaunchIntentForPackage 返回 null 即"未安装"。
             boolean perPkg = n.startsWith("getPackageInfo") || n.startsWith("getApplicationInfo")
                     || n.equals("getLaunchIntentForPackage");
+            // A7 fix: single-package probes that also reveal install state.
+            // getInstallerPackageName returns null (no installer); the rest follow the
+            // "package not found" contract with NameNotFoundException where declared.
+            boolean probeNull = n.equals("getInstallerPackageName");
+            boolean probeNotFound = n.startsWith("getPackageGids") || n.equals("isPackageSuspended")
+                    || n.equals("getApplicationEnabledSetting") || n.startsWith("getModuleInfo");
+            if (probeNull) {
+                hook(m, chain -> {
+                    String target = chain.getArgs().isEmpty() ? null : (String) chain.getArg(0);
+                    if (target != null && !target.equals(pkg)) {
+                        BlockStats.record(Config.APPS);
+                        return null;
+                    }
+                    return chain.proceed();
+                }, true);
+                continue;
+            }
+            if (probeNotFound) {
+                hook(m, chain -> {
+                    String target = chain.getArgs().isEmpty() ? null : (String) chain.getArg(0);
+                    if (target != null && !target.equals(pkg)) {
+                        BlockStats.record(Config.APPS);
+                        throw new android.content.pm.PackageManager.NameNotFoundException(target);
+                    }
+                    return chain.proceed();
+                }, true);
+                continue;
+            }
             // M6 修复：checkPermission 也在 ApplicationPackageManager 上有具体实现
             // （不是抽象 PackageManager），可 hook。原来只遍历了 ContextImpl，
             // 用 pm.checkPermission 自检的应用读到 DENIED，走「无权限」分支。
@@ -1100,6 +1330,35 @@ final class Hooks {
         if (am == null) return;
         for (Method m : am.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers())) continue;
+            // A2 fix: sync String APIs (blockingGetAuthToken/peekAuthToken/getUserData/
+            // getPassword/getPreviousName) bypass AccountManagerFuture entirely and would
+            // leak real tokens/account data even with the Future hooks in place.
+            String name = m.getName();
+            if (name.equals("blockingGetAuthToken")) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.ACCOUNTS);
+                    // Same semantics as the system "operation cancelled" path.
+                    throw new android.accounts.OperationCanceledException();
+                }, true);
+                continue;
+            }
+            if (name.equals("peekAuthToken") || name.equals("getUserData")
+                    || name.equals("getPassword")) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.ACCOUNTS);
+                    // null = no cached token / no such user data, a legal system value.
+                    return null;
+                });
+                continue;
+            }
+            if (name.equals("getPreviousName")) {
+                hook(m, chain -> {
+                    BlockStats.record(Config.ACCOUNTS);
+                    // Empty = account was never renamed.
+                    return "";
+                });
+                continue;
+            }
             // N2 修复：addOnAccountsUpdatedListener 返回 void，之前完全没拦。
             // 应用注册后回调直接拿到真实 Account[]，updateImmediately=true 时注册即泄露。
             // 这里拦截注册：不给系统注册 listener，但立即用空数组回调一次，
@@ -1203,8 +1462,15 @@ final class Hooks {
         try {
             java.util.List<Object> args = chain.getArgs();
             if (args.size() < 3) return;
-            Object cb = args.get(2);
-            Object handler = args.size() > 3 ? args.get(3) : null;
+            // M7 fix: getAuthToken/getAuthTokenByFeatures put the callback at index 4/6,
+            // not 2 (index 2 is a Bundle/String[]). Scan the args by runtime type so every
+            // overload works instead of only hasFeatures/getAccountsByTypeAndFeatures.
+            Object cb = null;
+            Object handler = null;
+            for (Object a : args) {
+                if (cb == null && a instanceof android.accounts.AccountManagerCallback) cb = a;
+                if (handler == null && a instanceof android.os.Handler) handler = a;
+            }
             if (cb == null) return;
             final android.accounts.AccountManagerCallback<Object> callback =
                     (android.accounts.AccountManagerCallback<Object>) cb;

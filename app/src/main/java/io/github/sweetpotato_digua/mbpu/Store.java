@@ -192,9 +192,19 @@ public final class Store {
             for (Map.Entry<String, Object> entry : nextValues.entrySet()) {
                 staging.putString(prefix + entry.getKey(), (String) entry.getValue());
             }
-            if (!staging.commit()) return;
+            if (!staging.commit()) {
+                // A10 fix: staging 侧都没写成就不算残留（可能部分写了），尽力清一次本次前缀，
+                // 避免多次重连重试累积孤儿 staging 键撑大 RemotePreferences 体积。
+                clearPrefix(prefs, prefix);
+                return;
+            }
             editor.putString(KEY_REMOTE_GENERATION, generation);
-            if (!editor.commit()) return;
+            if (!editor.commit()) {
+                // A10 fix: staging 写成功但代际切换失败——本次 staging 键已不可达，
+                // 不清理会永久残留。best-effort 清掉，不清也不影响正确性。
+                clearPrefix(prefs, prefix);
+                return;
+            }
 
             // 代际已切换，旧暂存数据可清理；清理失败不影响正确性，下次同步再清。
             try {
@@ -672,6 +682,18 @@ public final class Store {
             return Languages.isSupported(code) ? code : Languages.SYSTEM;
         } catch (Throwable t) {
             return Languages.SYSTEM;
+        }
+    }
+
+    /** A10 fix: best-effort 删除指定 staging 前缀的键（代际切换失败时清残留）。 */
+    private static void clearPrefix(SharedPreferences prefs, String prefix) {
+        try {
+            SharedPreferences.Editor cleanup = prefs.edit();
+            for (String key : prefs.getAll().keySet()) {
+                if (key.startsWith(prefix)) cleanup.remove(key);
+            }
+            cleanup.apply();
+        } catch (RuntimeException ignored) {
         }
     }
 }

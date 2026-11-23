@@ -499,11 +499,10 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                         Button(
                             onClick = {
                                 scope.launch {
-                                    val result = withContext(Dispatchers.IO) {
-                                        runCatching {
-                                            filterLogText(readFullLog(), level, filterPackage)
-                                        }.getOrNull()
+                                    val full = withContext(Dispatchers.IO) {
+                                        runCatching { readFullLog() }.getOrNull()
                                     }
+                                    val result = full?.let { filterLogText(it.output, level, filterPackage) }
                                     if (result.isNullOrBlank()) {
                                         messageIsError = true
                                         message = context.getString(R.string.debug_log_no_match)
@@ -514,10 +513,13 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                                             ClipData.newPlainText("MBPU log $filterPackage", result),
                                         )
                                         messageIsError = false
+                                        // M7：截断时明说，不把部分日志当完整报出去。
                                         message = context.getString(
                                             R.string.debug_log_pkg_copied,
                                             filterPackage,
-                                        )
+                                        ) + if (full!!.truncated) {
+                                            context.getString(R.string.debug_log_truncated_hint)
+                                        } else ""
                                     }
                                 }
                             },
@@ -534,11 +536,10 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                     Button(
                         onClick = {
                             scope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        filterLogText(readFullLog(), level, filterPackage)
-                                    }.getOrNull()
+                                val full = withContext(Dispatchers.IO) {
+                                    runCatching { readFullLog() }.getOrNull()
                                 }
+                                val result = full?.let { filterLogText(it.output, level, filterPackage) }
                                 if (result == null) {
                                     messageIsError = true
                                     message = context.getString(R.string.debug_log_no_root)
@@ -549,7 +550,11 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
                                         ClipData.newPlainText("MBPU log", result),
                                     )
                                     messageIsError = false
-                                    message = context.getString(R.string.debug_log_copied)
+                                    // M7：截断时明说，不把部分日志当完整报出去。
+                                    message = context.getString(R.string.debug_log_copied) +
+                                        if (full!!.truncated) {
+                                            context.getString(R.string.debug_log_truncated_hint)
+                                        } else ""
                                 }
                             }
                         },
@@ -793,7 +798,9 @@ private fun readLogBundle(): LogBundle {
         append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\" | tail -n ")
         append(LOG_TAIL_LINES * 4)
     }
-    val result = RootShell.exec(script)
+    // M6 修复：exec 保留头部丢尾部，超过 64KB 后被丢的正是最新日志，takeLast(120)
+    // 拿到的反而是旧日志。改用保留尾部的 execTail，shell 侧截断并入 truncated。
+    val result = RootShell.execTail(script, 256 * 1024)
     if (result.exitCode == 3) throw IllegalStateException("no log file")
     if (!result.ok()) throw IllegalStateException(result.output)
     val split = result.output.indexOf(LOG_SEPARATOR)
@@ -804,9 +811,9 @@ private fun readLogBundle(): LogBundle {
         .filter { it.isNotBlank() }
         .map { trimLogLine(it) }
         .toList()
-    val truncated = lines.size > LOG_TAIL_LINES
+    val truncated = lines.size > LOG_TAIL_LINES || result.truncated
     return LogBundle(
-        logs = if (truncated) lines.takeLast(LOG_TAIL_LINES) else lines,
+        logs = if (lines.size > LOG_TAIL_LINES) lines.takeLast(LOG_TAIL_LINES) else lines,
         truncated = truncated,
         hookStatLines = statPart.lineSequence().filter { it.isNotBlank() }.toList(),
     )
@@ -878,7 +885,7 @@ private fun parseHookStats(lines: List<String>): Map<String, HookStat> {
     return out
 }
 
-private fun readFullLog(): String {
+private fun readFullLog(): RootShell.Result {
     val script = buildString {
         append("f=\$(ls -t /data/adb/lspd/log/modules_*.log 2>/dev/null | head -1); ")
         append("[ -n \"\$f\" ] || exit 3; ")
@@ -886,10 +893,12 @@ private fun readFullLog(): String {
         // 日志文件本身有大小限制（LSPosed 轮转），全量读取不会无限膨胀。
         append("grep -F 'io.github.sweetpotato_digua.mbpu' \"\$f\"")
     }
-    val result = RootShell.exec(script)
+    // M7 修复：RootShell.exec 保留头部丢尾部，超限时最新的日志被丢而 UI 仍称
+    // 「完整日志」。改用保留尾部的 execTail（512 KiB），真实截断状态交给调用方。
+    val result = RootShell.execTail(script, 512 * 1024)
     if (result.exitCode == 3) throw IllegalStateException("no log file")
     if (!result.ok()) throw IllegalStateException(result.output)
-    return result.output
+    return result
 }
 
 /** Hook 注入统计的展示文案：3/9；有子进程时附带子进程数字。 */
@@ -982,7 +991,10 @@ private fun exportLog(
     level: LogLevel = LogLevel.ALL,
     pkg: String = "",
 ): String {
-    val text = filterLogText(readFullLog(), level, pkg)
+    val full = readFullLog()
+    val text = filterLogText(full.output, level, pkg) +
+        // M7：导出的截断状态写进文件末尾，读文件的人能知道这不是全量。
+        if (full.truncated) "\n[mbpu: log output truncated, last 512KiB kept]" else ""
     val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
     val name = "mbpu-log-$stamp.txt"
 
@@ -1033,8 +1045,11 @@ private fun pruneDownloadExports(context: Context) {
             "${MediaStore.Downloads.DATE_ADDED} DESC",
         )?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
+            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)
             var index = 0
             while (cursor.moveToNext()) {
+                // H4：下载目录同样只删本应用完整格式的文件，不碰用户的同前缀文件。
+                if (!EXPORT_NAME_RE.matches(cursor.getString(nameCol) ?: "")) continue
                 if (index++ >= EXPORT_KEEP_COUNT) {
                     val uri = ContentUris.withAppendedId(
                         MediaStore.Downloads.EXTERNAL_CONTENT_URI,
@@ -1046,6 +1061,12 @@ private fun pruneDownloadExports(context: Context) {
         }
     }
 }
+
+/**
+ * H4：导出文件名的完整格式（与 exportLogToTree 的生成规则严格一致）。
+ * 清理只删这个完整格式，绝不按前缀删用户自己的同名前缀文件。
+ */
+private val EXPORT_NAME_RE = Regex("^mbpu-log-\\d{8}-\\d{6}\\.txt$")
 
 /** 自定义 SAF 目录同样只保留最近 10 个。 */
 private fun pruneCustomExports(context: Context, tree: String) {
@@ -1071,7 +1092,10 @@ private fun pruneCustomExports(context: Context, tree: String) {
             while (cursor.moveToNext()) {
                 val docId = cursor.getString(idCol)
                 val docName = cursor.getString(nameCol) ?: continue
-                if (docName.startsWith("mbpu-log-")) docs.add(docId to docName)
+                // H4 修复：只认本应用生成的完整文件名格式（mbpu-log-<yyyyMMdd-HHmmss>.txt）。
+                // 原来按任意前缀匹配，用户目录里自己命名的 mbpu-log-important.txt 会被
+                // 连带删除——SAF 写授权下这是真实的用户数据丢失。
+                if (EXPORT_NAME_RE.matches(docName)) docs.add(docId to docName)
             }
         }
         docs.sortedByDescending { it.second }.drop(EXPORT_KEEP_COUNT).forEach { (id, _) ->
