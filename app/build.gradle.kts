@@ -18,7 +18,7 @@ val expectedSigHash: String = localProps.getProperty("EXPECTED_SIG_SHA256") ?: "
 android {
     namespace = "io.github.sweetpotato_digua.mbpu"
     compileSdk = 37
-    compileSdkMinor = 0
+    compileSdkMinor = 2
 
     defaultConfig {
         applicationId = "io.github.sweetpotato_digua.mbpu"
@@ -118,10 +118,12 @@ dependencies {
     implementation("androidx.compose.ui:ui:1.12.0")
     implementation("androidx.compose.foundation:foundation:1.12.0")
 
-    implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.4")
-    implementation("top.yukonga.miuix.kmp:miuix-preference-android:0.9.4")
-    implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.5-rc01")
+    implementation("top.yukonga.miuix.kmp:miuix-preference-android:0.9.5-rc01")
+    implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.5-rc01")
     // 高级材质（玻璃 / 渐变模糊）。库本身声明 minSdk 33，
     // 这里用 tools:overrideLibrary 合并，运行时用 isRuntimeShaderSupported() 守卫降级。
-    implementation("top.yukonga.miuix.kmp:miuix-blur-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-blur-android:0.9.5-rc01")
+    // 0.9.5 起描边/光源体系（EdgeStroke、isRuntimeShaderSupported）从 blur 迁到 material。
+    implementation("top.yukonga.miuix.kmp:miuix-material-android:0.9.5-rc01")
 }

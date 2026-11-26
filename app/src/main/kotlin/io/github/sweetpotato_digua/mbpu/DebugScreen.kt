@@ -701,9 +701,10 @@ private data class DebugSnapshot(
 }
 
 private fun collectDebugSnapshot(context: Context, store: Store): DebugSnapshot {
+    // SDK 37.2 起 versionName 平台注解收紧为 String?，取不到时兜底 "?"。
     val version = runCatching {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName
-    }.getOrDefault("?")
+    }.getOrNull() ?: "?"
 
     val service = App.service()
     val lsposed = if (service == null) {
