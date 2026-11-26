@@ -126,4 +126,6 @@ dependencies {
     implementation("top.yukonga.miuix.kmp:miuix-blur-android:0.9.5-rc01")
     // 0.9.5 起描边/光源体系（EdgeStroke、isRuntimeShaderSupported）从 blur 迁到 material。
     implementation("top.yukonga.miuix.kmp:miuix-material-android:0.9.5-rc01")
+    // rc01 官方 Glass 组件家族（GlassTopAppBar、GlassIconButton），替掉自研玻璃顶栏/圆钮。
+    implementation("top.yukonga.miuix.kmp:miuix-glass-android:0.9.5-rc01")
 }

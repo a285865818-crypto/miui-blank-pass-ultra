@@ -19,12 +19,12 @@ import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.glass.GlassIconButton
+import top.yukonga.miuix.kmp.glass.GlassTopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -414,24 +414,20 @@ internal fun SettingsTopBar(
     onBack: () -> Unit,
     backdrop: top.yukonga.miuix.kmp.blur.LayerBackdrop? = null,
 ) {
-    GlassTopBar(backdrop = backdrop) {
-        SmallTopAppBar(
-            color = Glass.barColor(),
-            title = title,
-            navigationIcon = {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.glassButton(backdrop),
-                ) {
-                    Icon(
-                        imageVector = MiuixIcons.Back,
-                        contentDescription = stringResource(R.string.back),
-                        tint = MiuixTheme.colorScheme.onBackground,
-                    )
-                }
-            },
-        )
-    }
+    GlassTopAppBar(
+        title = title,
+        expandable = false,
+        backdrop = backdrop,
+        navigationIcon = {
+            GlassIconButton(onClick = onBack) {
+                Icon(
+                    imageVector = MiuixIcons.Back,
+                    contentDescription = stringResource(R.string.back),
+                    tint = MiuixTheme.colorScheme.onBackground,
+                )
+            }
+        },
+    )
 }
 
 private fun themeSummaryRes(mode: ThemeMode): Int = when (mode) {

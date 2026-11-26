@@ -122,7 +122,6 @@ import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.PullToRefreshState
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Snackbar
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.SnackbarData
@@ -132,6 +131,9 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.ArrowRight
+import top.yukonga.miuix.kmp.glass.GlassFloatingActionButton
+import top.yukonga.miuix.kmp.glass.GlassIconButton
+import top.yukonga.miuix.kmp.glass.GlassTopAppBar
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.icon.extended.Info
@@ -732,16 +734,14 @@ internal fun PermNullScreen(
 
     Scaffold(
         topBar = {
-            // 用 SmallTopAppBar 而非 TopAppBar：后者的展开态大标题会在顶部留出一大片空白，
-            // 这里只需要一行紧凑标题。
-            GlassTopBar(backdrop = glassBackdrop) {
-                SmallTopAppBar(
+            // 用 GlassTopAppBar（expandable=false 紧凑单行标题）而非 TopAppBar：
+            // 后者的展开态大标题会在顶部留出一大片空白，这里只需要一行紧凑标题。
+            GlassTopAppBar(
                 title = if (selecting) {
                     stringResource(R.string.batch_selected_count, selected.size)
                 } else {
                     stringResource(R.string.app_name)
                 },
-                color = Glass.barColor(),
                 subtitle = when {
                     selecting -> stringResource(R.string.batch_select_hint)
                     home.loading -> stringResource(R.string.loading_apps)
@@ -749,10 +749,13 @@ internal fun PermNullScreen(
                         stringResource(R.string.search_match_count, shown.size, allApps.size)
                     else -> stringResource(R.string.enabled_count, enabledCount, allApps.size)
                 },
+                expandable = false,
+                backdrop = glassBackdrop,
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     // 选择模式下左上角变成取消；正常时是设置入口。
-                    IconButton(
+                    // GlassTopAppBar 内的 GlassIconButton 自动继承顶栏玻璃材质。
+                    GlassIconButton(
                         onClick = {
                             if (selecting) {
                                 selecting = false
@@ -761,7 +764,6 @@ internal fun PermNullScreen(
                                 onOpenSettings(false)
                             }
                         },
-                        modifier = Modifier.glassButton(glassBackdrop),
                     ) {
                         Icon(
                             imageVector = if (selecting) MiuixIcons.Close else MiuixIcons.Settings,
@@ -776,9 +778,8 @@ internal fun PermNullScreen(
                     // 用 OverlayListPopup 而不是 OverlayIconDropdownMenu：后者的
                     // DropdownItem 没有分隔线参数，无法做分组。
                     Box {
-                        IconButton(
+                        GlassIconButton(
                         onClick = { showMenu = true },
-                        modifier = Modifier.glassButton(glassBackdrop),
                     ) {
                             Icon(
                                 imageVector = MiuixIcons.More,
@@ -925,7 +926,6 @@ internal fun PermNullScreen(
                     }
                 },
             )
-            }
         },
     ) { innerPadding ->
         // 外层不录制，只做叠加层宿主；内层才挂 layerBackdrop。
@@ -1530,36 +1530,24 @@ internal fun PermNullScreen(
                     // 只需要和提示条留出呼吸间距。
                     .padding(end = 20.dp, bottom = 24.dp),
             ) {
-                // 不用 FloatingActionButton：它内部 Surface 走 squircle（8 段贝塞尔），
-                // 满圆角时轮廓会变成八边形。这里直接用官方 textureBlur + CircleShape。
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .glassButton(
-                            backdrop = glassBackdrop,
-                            tint = MiuixTheme.colorScheme.primary,
-                            // 0.30 的白箭头压在淡蓝玻璃上，浅色主题对比度只有 1.2:1；
-                            // 提到 0.72 让底色足够饱和，白箭头在深浅主题都能看清。
-                            tintAlpha = 0.72f,
-                        )
-                        .clickable(
-                            role = Role.Button,
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
-                            backToTopRunning = true
-                            scope.launch {
-                                // animateScrollToItem 会被新手势取消并抛 CancellationException，
-                                // 复位必须放 finally：否则动画一被打断，backToTopRunning 永远是 true，
-                                // 回顶按钮从此不再出现，只能退出页面才能恢复。
-                                try {
-                                    listState.animateScrollToItem(0)
-                                } finally {
-                                    backToTopRunning = false
-                                }
+                // GlassFloatingActionButton：官方 primary 染色玻璃 FAB，
+                // 自带圆形玻璃材质、描边与按压缩放（旧手工 textureBlur 蓝玻璃圆钮的官方替身）。
+                GlassFloatingActionButton(
+                    onClick = {
+                        backToTopRunning = true
+                        scope.launch {
+                            // animateScrollToItem 会被新手势取消并抛 CancellationException，
+                            // 复位必须放 finally：否则动画一被打断，backToTopRunning 永远是 true，
+                            // 回顶按钮从此不再出现，只能退出页面才能恢复。
+                            try {
+                                listState.animateScrollToItem(0)
+                            } finally {
+                                backToTopRunning = false
                             }
-                        },
-                    contentAlignment = Alignment.Center,
+                        }
+                    },
+                    backdrop = glassBackdrop,
+                    modifier = Modifier.size(52.dp),
                 ) {
                     // ArrowRight 的 viewport 是 10x16 非正方形，旋转 90° 后视觉重心偏移；
                     // ChevronForward 是 1186.8x1186.8 正方形，旋转后严格居中。
