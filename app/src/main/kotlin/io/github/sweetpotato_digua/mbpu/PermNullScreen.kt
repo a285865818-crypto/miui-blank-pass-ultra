@@ -133,13 +133,19 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.ArrowRight
 import top.yukonga.miuix.kmp.glass.GlassBottomSheet
+import top.yukonga.miuix.kmp.glass.GlassBottomSheetDefaults
 import top.yukonga.miuix.kmp.glass.GlassCard
 import top.yukonga.miuix.kmp.glass.GlassDialog
+import top.yukonga.miuix.kmp.glass.GlassDialogDefaults
 import top.yukonga.miuix.kmp.glass.GlassDropdownPopup
 import top.yukonga.miuix.kmp.glass.GlassFloatingActionButton
 import top.yukonga.miuix.kmp.glass.GlassIconButton
+import top.yukonga.miuix.kmp.glass.GlassPopupDefaults
 import top.yukonga.miuix.kmp.glass.GlassPopupItem
 import top.yukonga.miuix.kmp.glass.GlassTopAppBar
+import top.yukonga.miuix.kmp.glass.GlassTopAppBarDefaults
+import top.yukonga.miuix.kmp.material.GlassShadows
+import androidx.compose.ui.graphics.SolidColor
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.icon.extended.Info
@@ -755,6 +761,16 @@ internal fun PermNullScreen(
                 // 滚动离开顶部才浮现玻璃材质；回顶后自动收回。
                 isContentScrolled = showBackToTop,
                 scrollBehavior = scrollBehavior,
+                // 关闭高级材质：纯色顶栏——去掉渐变带、标题模糊、按钮描边与阴影
+                //（backdrop 已为 null，官方降级只砍采样，这些视觉要显式关）。
+                bandBrush = if (Glass.active()) {
+                    GlassTopAppBarDefaults.bandBrush(MiuixTheme.colorScheme.surface)
+                } else {
+                    SolidColor(MiuixTheme.colorScheme.surface)
+                },
+                titleBlurRadius = if (Glass.active()) GlassTopAppBarDefaults.TitleBlurRadius else 0.dp,
+                stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
+                buttonShadow = if (Glass.active()) GlassShadows.Regular else null,
                 navigationIcon = {
                     // 选择模式下左上角变成取消；正常时是设置入口。
                     // GlassTopAppBar 内的 GlassIconButton 自动继承顶栏玻璃材质。
@@ -767,6 +783,8 @@ internal fun PermNullScreen(
                                 onOpenSettings(false)
                             }
                         },
+                        stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
+                        shadow = if (Glass.active()) GlassShadows.Regular else null,
                     ) {
                         Icon(
                             imageVector = if (selecting) MiuixIcons.Close else MiuixIcons.Settings,
@@ -786,6 +804,8 @@ internal fun PermNullScreen(
                         modifier = Modifier.onGloballyPositioned {
                             menuAnchorBounds = it.boundsInWindow()
                         },
+                        stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
+                        shadow = if (Glass.active()) GlassShadows.Regular else null,
                     ) {
                         Icon(
                             imageVector = MiuixIcons.More,
@@ -1279,6 +1299,9 @@ internal fun PermNullScreen(
                 title = target?.label ?: "",
                 show = target != null,
                 backdrop = glassBackdrop,
+                // 关闭高级材质：无渐进模糊、无玻璃描边。
+                progressiveBlur = Glass.active(),
+                stroke = if (Glass.active()) GlassBottomSheetDefaults.stroke() else null,
                 startAction = {
                     GlassIconButton(onClick = { editing = null }) {
                         Icon(
@@ -1421,6 +1444,8 @@ internal fun PermNullScreen(
                         }
                     },
                     backdrop = glassBackdrop,
+                    stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
+                    shadow = if (Glass.active()) GlassShadows.Regular else null,
                     modifier = Modifier.size(52.dp),
                 ) {
                     // ArrowRight 的 viewport 是 10x16 非正方形，旋转 90° 后视觉重心偏移；
@@ -1445,6 +1470,7 @@ internal fun PermNullScreen(
                 onDismissRequest = { showHelp = false },
                 show = showHelp,
                 backdrop = glassBackdrop,
+                stroke = if (Glass.active()) GlassDialogDefaults.stroke() else null,
                 title = stringResource(R.string.help_title),
             ) {
                 Column(modifier = Modifier.padding(top = 4.dp)) {
@@ -1566,6 +1592,7 @@ internal fun PermNullScreen(
                 },
                 show = askRestartAfterBatch,
                 backdrop = glassBackdrop,
+                stroke = if (Glass.active()) GlassDialogDefaults.stroke() else null,
                 title = stringResource(R.string.batch_restart_title),
                 summary = stringResource(R.string.batch_restart_summary),
             ) {
@@ -1598,6 +1625,7 @@ internal fun PermNullScreen(
             GlassDialog(
                 show = pendingBatch != null,
                 backdrop = glassBackdrop,
+                stroke = if (Glass.active()) GlassDialogDefaults.stroke() else null,
                 title = when (pendingBatch) {
                     BatchAction.ENABLE -> stringResource(R.string.batch_confirm_enable_title)
                     BatchAction.DISABLE -> stringResource(R.string.batch_confirm_disable_title)
@@ -1643,6 +1671,7 @@ internal fun PermNullScreen(
             GlassDialog(
                 show = showRestartDialog,
                 backdrop = glassBackdrop,
+                stroke = if (Glass.active()) GlassDialogDefaults.stroke() else null,
                 title = stringResource(R.string.restart_dialog_title),
                 summary = run {
                     val plan = restartPlan
@@ -1720,6 +1749,11 @@ internal fun PermNullScreen(
             onDismissRequest = { showMenu = false },
             anchorBounds = menuAnchorBounds,
             backdrop = glassBackdrop,
+            visuals = if (Glass.active()) {
+                GlassPopupDefaults.visuals()
+            } else {
+                GlassPopupDefaults.visuals().copy(stroke = null, shadow = null)
+            },
         ) {
             ListPopupColumn {
                 if (selecting) {

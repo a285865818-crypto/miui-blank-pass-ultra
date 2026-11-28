@@ -3,6 +3,7 @@ package io.github.sweetpotato_digua.mbpu
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -200,5 +201,11 @@ fun AppRoot(store: Store, onExit: () -> Unit) {
         entry<Route.Debug> {
             DebugScreen(store = store, onBack = { backStack.removeLastOrNull() })
         }
+    }
+
+    // 预测性返回开关：关闭时抢先消费系统返回（后注册的 BackHandler 优先于 NavDisplay
+    // 内置的预测返回处理器），返回直接 pop、无跟手预览；开启时由 NavDisplay 跟手接管。
+    BackHandler(enabled = !AppThemeState.predictiveBack) {
+        if (backStack.size > 1) backStack.removeLastOrNull() else onExit()
     }
 }

@@ -34,6 +34,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.glass.GlassDialog
+import top.yukonga.miuix.kmp.glass.GlassDialogDefaults
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -167,6 +168,7 @@ internal fun ConfigBackupSection(
         onDismissRequest = { if (!busy) pendingRestore = null },
         show = pendingRestore != null,
         backdrop = backdrop,
+        stroke = if (Glass.active()) GlassDialogDefaults.stroke() else null,
         title = stringResource(R.string.backup_restore_confirm_title),
         summary = stringResource(R.string.backup_restore_confirm_summary, pendingRestore?.size ?: 0),
     ) {

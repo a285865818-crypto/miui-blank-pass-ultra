@@ -29,6 +29,9 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.glass.GlassIconButton
 import top.yukonga.miuix.kmp.glass.GlassTopAppBar
+import top.yukonga.miuix.kmp.glass.GlassTopAppBarDefaults
+import top.yukonga.miuix.kmp.material.GlassShadows
+import androidx.compose.ui.graphics.SolidColor
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -478,8 +481,21 @@ internal fun SettingsTopBar(
         expandable = false,
         backdrop = backdrop,
         isContentScrolled = isContentScrolled,
+        // 关闭高级材质：纯色顶栏——无渐变带、无标题模糊、无按钮描边阴影。
+        bandBrush = if (Glass.active()) {
+            GlassTopAppBarDefaults.bandBrush(MiuixTheme.colorScheme.surface)
+        } else {
+            SolidColor(MiuixTheme.colorScheme.surface)
+        },
+        titleBlurRadius = if (Glass.active()) GlassTopAppBarDefaults.TitleBlurRadius else 0.dp,
+        stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
+        buttonShadow = if (Glass.active()) GlassShadows.Regular else null,
         navigationIcon = {
-            GlassIconButton(onClick = onBack) {
+            GlassIconButton(
+                onClick = onBack,
+                stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
+                shadow = if (Glass.active()) GlassShadows.Regular else null,
+            ) {
                 Icon(
                     imageVector = MiuixIcons.Back,
                     contentDescription = stringResource(R.string.back),
