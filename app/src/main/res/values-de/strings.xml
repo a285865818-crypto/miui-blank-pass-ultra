@@ -121,7 +121,7 @@
     <string name="search_history_remove">Lange drücken, um diesen Eintrag zu löschen</string>
     <string name="about_changelog_section">Änderungsprotokoll</string>
     <string name="about_changelog_title">%1$s – Änderungen:</string>
-    <string name="about_changelog_body">Einige bekannte Probleme behoben.</string>
+    <string name="about_changelog_body">1. Erneuerte Benutzeroberfläche\nEinige bekannte Probleme wurden behoben.</string>
     <string name="debug_export_log_downloads">Protokoll in Downloads exportieren</string>
     <string name="debug_export_log_custom">Protokoll in benutzerdefinierten Ordner exportieren</string>
     <string name="backup_section">Konfigurationssicherung</string>

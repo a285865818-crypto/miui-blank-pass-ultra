@@ -121,7 +121,7 @@
     <string name="search_history_remove">길게 눌러 이 기록 삭제</string>
     <string name="about_changelog_section">변경 내역</string>
     <string name="about_changelog_title">%1$s 변경 내역:</string>
-    <string name="about_changelog_body">일부 알려진 문제를 수정했습니다.</string>
+    <string name="about_changelog_body">1. UI 리뉴얼\n알려진 문제를 수정했습니다.</string>
     <string name="debug_export_log_downloads">로그를 다운로드로 난내기</string>
     <string name="debug_export_log_custom">로그를 사용자 지정 폴터로 난내기</string>
     <string name="backup_section">설정 백업</string>

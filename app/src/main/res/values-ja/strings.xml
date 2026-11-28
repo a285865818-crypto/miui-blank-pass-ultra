@@ -121,7 +121,7 @@
     <string name="search_history_remove">長押しでこの履歴を削除</string>
     <string name="about_changelog_section">更新履歴</string>
     <string name="about_changelog_title">%1$s の更新内容：</string>
-    <string name="about_changelog_body">いくつかの既知の問題を修正しました。</string>
+    <string name="about_changelog_body">1. UIを一新\nいくつかの既知の問題を修正しました。</string>
     <string name="debug_export_log_downloads">ログをダウンロードにエクスポート</string>
     <string name="debug_export_log_custom">ログをカスタムフォルダーにエクスポート</string>
     <string name="backup_section">設定のバックアップ</string>

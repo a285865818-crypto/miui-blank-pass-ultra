@@ -121,7 +121,7 @@
     <string name="search_history_remove">Bu kaydı silmek için uzun bas</string>
     <string name="about_changelog_section">Yenilikler</string>
     <string name="about_changelog_title">%1$s yenilikleri:</string>
-    <string name="about_changelog_body">Bilinen bazı sorunlar düzeltildi.</string>
+    <string name="about_changelog_body">1. Yenilenmiş arayüz\nBilinen bazı sorunlar giderildi.</string>
     <string name="debug_export_log_downloads">Günlüğü İndirilenler\'e aktar</string>
     <string name="debug_export_log_custom">Günlüğü özel klasöre aktar</string>
     <string name="backup_section">Yapılandırma yedeği</string>

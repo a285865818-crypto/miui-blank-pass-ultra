@@ -121,7 +121,7 @@
     <string name="search_history_remove">長按刪除這筆記錄</string>
     <string name="about_changelog_section">更新日誌</string>
     <string name="about_changelog_title">%1$s 版本更新日誌：</string>
-    <string name="about_changelog_body">解決了一些已知問題。</string>
+    <string name="about_changelog_body">1. UI煥新\n解決了一些已知問題。</string>
     <string name="debug_export_log_downloads">匯出日誌到下載目錄</string>
     <string name="debug_export_log_custom">匯出日誌到自訂目錄</string>
     <string name="backup_section">設定備份</string>

@@ -121,7 +121,7 @@
     <string name="search_history_remove">Долгое нажатие удаляет эту запись</string>
     <string name="about_changelog_section">Что нового</string>
     <string name="about_changelog_title">Что нового в %1$s:</string>
-    <string name="about_changelog_body">Исправлены некоторые известные проблемы.</string>
+    <string name="about_changelog_body">1. Обновлённый интерфейс\nИсправлены некоторые известные проблемы.</string>
     <string name="debug_export_log_downloads">Экспорт журнала в Загрузки</string>
     <string name="debug_export_log_custom">Экспорт журнала в свою папку</string>
     <string name="backup_section">Резервная копия конфигурации</string>

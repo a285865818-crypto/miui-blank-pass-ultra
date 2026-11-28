@@ -121,7 +121,7 @@
     <string name="search_history_remove">Appui long pour supprimer cette entrée</string>
     <string name="about_changelog_section">Nouveautés</string>
     <string name="about_changelog_title">Nouveautés de %1$s :</string>
-    <string name="about_changelog_body">Correction de certains problèmes connus.</string>
+    <string name="about_changelog_body">1. Interface rafraîchie\nCorrection de quelques problèmes connus.</string>
     <string name="debug_export_log_downloads">Exporter le journal vers Téléchargements</string>
     <string name="debug_export_log_custom">Exporter le journal vers un dossier personnalisé</string>
     <string name="backup_section">Sauvegarde de la configuration</string>

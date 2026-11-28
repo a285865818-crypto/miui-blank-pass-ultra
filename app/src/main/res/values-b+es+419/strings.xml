@@ -121,7 +121,7 @@
     <string name="search_history_remove">Mantén presionado para borrar esta entrada</string>
     <string name="about_changelog_section">Novedades</string>
     <string name="about_changelog_title">Novedades de %1$s:</string>
-    <string name="about_changelog_body">Se corrigieron algunos problemas conocidos.</string>
+    <string name="about_changelog_body">1. Interfaz renovada\nSe corrigieron algunos problemas conocidos.</string>
     <string name="debug_export_log_downloads">Exportar registro a Descargas</string>
     <string name="debug_export_log_custom">Exportar registro a carpeta personalizada</string>
     <string name="backup_section">Copia de seguridad de la configuración</string>

@@ -121,7 +121,7 @@
     <string name="search_history_remove">Houd ingedrukt om dit item te verwijderen</string>
     <string name="about_changelog_section">Wijzigingen</string>
     <string name="about_changelog_title">Wijzigingen in %1$s:</string>
-    <string name="about_changelog_body">Enkele bekende problemen opgelost.</string>
+    <string name="about_changelog_body">1. Vernieuwde interface\nEnkele bekende problemen opgelost.</string>
     <string name="debug_export_log_downloads">Logboek exporteren naar Downloads</string>
     <string name="debug_export_log_custom">Logboek exporteren naar aangepaste map</string>
     <string name="backup_section">Configuratieback-up</string>

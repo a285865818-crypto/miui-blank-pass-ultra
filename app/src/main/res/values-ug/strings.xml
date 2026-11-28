@@ -121,7 +121,7 @@
     <string name="search_history_remove">بۇ خاتىرىنى ئۆچۈرۈش ئۈچۈن ئۇزۇن بېسىڭ</string>
     <string name="about_changelog_section">يېڭىلانما خاتىرىسى</string>
     <string name="about_changelog_title">%1$s نەشرىدىكى يېڭىلانما خاتىرىسى:</string>
-    <string name="about_changelog_body">بەزى ئايدىڭ مەسىلىلەر تۈزىتىلدى.</string>
+    <string name="about_changelog_body">1. UI يېڭىلاندى\nبەزى بىلىنگەن مەسىلىلەر ھەل قىلىندى.</string>
     <string name="debug_export_log_downloads">خاتىرىنى چۈشۈرۈش قىسىمغا چىقىرىش</string>
     <string name="debug_export_log_custom">خاتىرىنى خاس قىسىمغا چىقىرىش</string>
     <string name="backup_section">سەپلىمە زاپاسلاش</string>

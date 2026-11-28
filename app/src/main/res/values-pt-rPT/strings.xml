@@ -121,7 +121,7 @@
     <string name="search_history_remove">Toque sem soltar para apagar esta entrada</string>
     <string name="about_changelog_section">Novidades</string>
     <string name="about_changelog_title">Novidades do %1$s:</string>
-    <string name="about_changelog_body">Corrigidos alguns problemas conhecidos.</string>
+    <string name="about_changelog_body">1. Interface renovada\nCorrigidos alguns problemas conhecidos.</string>
     <string name="debug_export_log_downloads">Exportar registo para Transferências</string>
     <string name="debug_export_log_custom">Exportar registo para pasta personalizada</string>
     <string name="backup_section">Cópia de segurança da configuração</string>

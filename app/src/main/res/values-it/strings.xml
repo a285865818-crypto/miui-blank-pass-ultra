@@ -121,7 +121,7 @@
     <string name="search_history_remove">Tieni premuto per eliminare questa voce</string>
     <string name="about_changelog_section">Novità</string>
     <string name="about_changelog_title">Novità di %1$s:</string>
-    <string name="about_changelog_body">Risolti alcuni problemi noti.</string>
+    <string name="about_changelog_body">1. Interfaccia rinnovata\nRisolti alcuni problemi noti.</string>
     <string name="debug_export_log_downloads">Esporta registro in Download</string>
     <string name="debug_export_log_custom">Esporta registro in cartella personalizzata</string>
     <string name="backup_section">Backup della configurazione</string>

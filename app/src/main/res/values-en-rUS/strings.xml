@@ -121,7 +121,7 @@
     <string name="search_history_remove">Long press to delete this entry</string>
     <string name="about_changelog_section">Changelog</string>
     <string name="about_changelog_title">What\'s new in %1$s:</string>
-    <string name="about_changelog_body">Fixed some known issues.</string>
+    <string name="about_changelog_body">1. Refreshed UI\nFixed some known issues.</string>
     <string name="debug_export_log_downloads">Export log to Downloads</string>
     <string name="debug_export_log_custom">Export log to custom folder</string>
     <string name="backup_section">Configuration backup</string>
