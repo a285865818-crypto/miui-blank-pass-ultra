@@ -254,7 +254,8 @@ final class RootShell {
             StringBuilder script = new StringBuilder("failed=0\n");
             for (String pkg : valid.subList(from, Math.min(from + BATCH_SIZE, valid.size()))) {
                 script.append("timeout ").append(COMMAND_TIMEOUT_SECONDS)
-                        .append(" am force-stop ").append(pkg).append(" || failed=1\n");
+                        .append(" am force-stop ").append(pkg)
+                        .append(" || { failed=1; echo \"force-stop failed: ").append(pkg).append("\"; }\n");
             }
             script.append("exit $failed");
             Result r = exec(script.toString());

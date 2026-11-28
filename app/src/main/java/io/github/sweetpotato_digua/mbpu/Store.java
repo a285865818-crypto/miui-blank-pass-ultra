@@ -692,7 +692,10 @@ public final class Store {
             for (String key : prefs.getAll().keySet()) {
                 if (key.startsWith(prefix)) cleanup.remove(key);
             }
-            cleanup.apply();
+            // commit() 而非 apply()：异步 apply 失败静默，反复重连会在 daemon 侧
+            // 累积孤儿 staging 键（RemotePreferences 体积无界增长）。
+            // 同步 commit 失败时至少能感知（下次同步再清）。
+            cleanup.commit();
         } catch (RuntimeException ignored) {
         }
     }
