@@ -45,6 +45,9 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import top.yukonga.miuix.kmp.squircle.squircleClip
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -132,7 +135,9 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.ArrowRight
 import top.yukonga.miuix.kmp.glass.GlassBottomSheet
+import top.yukonga.miuix.kmp.glass.GlassCard
 import top.yukonga.miuix.kmp.glass.GlassDialog
+import top.yukonga.miuix.kmp.glass.GlassDropdownPopup
 import top.yukonga.miuix.kmp.glass.GlassFloatingActionButton
 import top.yukonga.miuix.kmp.glass.GlassIconButton
 import top.yukonga.miuix.kmp.glass.GlassTopAppBar
@@ -780,11 +785,15 @@ internal fun PermNullScreen(
                     }
                 },
                 actions = {
-                    // 用 OverlayListPopup 而不是 OverlayIconDropdownMenu：后者的
-                    // DropdownItem 没有分隔线参数，无法做分组。
+                    // 用 GlassDropdownPopup 而不是 GlassIconDropdownMenu：后者的
+                    // DropdownEntry 没有分隔线参数，无法做分组。
                     Box {
+                        var menuAnchorBounds by remember { mutableStateOf(Rect.Zero) }
                         GlassIconButton(
                         onClick = { showMenu = true },
+                        modifier = Modifier.onGloballyPositioned {
+                            menuAnchorBounds = it.boundsInWindow()
+                        },
                     ) {
                             Icon(
                                 imageVector = MiuixIcons.More,
@@ -792,10 +801,11 @@ internal fun PermNullScreen(
                                 contentDescription = stringResource(R.string.more_options),
                             )
                         }
-                        OverlayListPopup(
+                        GlassDropdownPopup(
                             show = showMenu,
-                            alignment = PopupPositionProvider.Align.TopEnd,
                             onDismissRequest = { showMenu = false },
+                            anchorBounds = menuAnchorBounds,
+                            backdrop = glassBackdrop,
                         ) {
                             ListPopupColumn {
                                 if (selecting) {
@@ -1477,7 +1487,7 @@ internal fun PermNullScreen(
                                     text = stringResource(R.string.section_rule),
                                     insideMargin = PaddingValues(16.dp, 8.dp),
                                 )
-                                Card(modifier = Modifier.padding(bottom = 16.dp)) {
+                                GlassCard(modifier = Modifier.padding(bottom = 16.dp)) {
                                     val allSelected = draft.size == Config.CATS.size
                                     CheckboxPreference(
                                         title = stringResource(R.string.check_all),
