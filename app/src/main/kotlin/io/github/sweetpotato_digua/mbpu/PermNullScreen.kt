@@ -113,7 +113,6 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Checkbox
-import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -140,6 +139,7 @@ import top.yukonga.miuix.kmp.glass.GlassDialog
 import top.yukonga.miuix.kmp.glass.GlassDropdownPopup
 import top.yukonga.miuix.kmp.glass.GlassFloatingActionButton
 import top.yukonga.miuix.kmp.glass.GlassIconButton
+import top.yukonga.miuix.kmp.glass.GlassPopupItem
 import top.yukonga.miuix.kmp.glass.GlassTopAppBar
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.Close
@@ -741,6 +741,7 @@ internal fun PermNullScreen(
     // 更多菜单锚点（GlassIconButton 的窗口 bounds），供根叠加层里的 GlassDropdownPopup 定位。
     var menuAnchorBounds by remember { mutableStateOf(Rect.Zero) }
 
+    Box {
     Scaffold(
         topBar = {
             // 用 GlassTopAppBar（expandable=false 紧凑单行标题）而非 TopAppBar：
@@ -1753,146 +1754,171 @@ internal fun PermNullScreen(
                 }
             }
 
-        // 更多菜单（玻璃下拉弹层）：全屏叠加层宿主，锚点在顶栏按钮。
-            GlassDropdownPopup(
-                show = showMenu,
-                onDismissRequest = { showMenu = false },
-                anchorBounds = menuAnchorBounds,
-                backdrop = glassBackdrop,
-            ) {
-                ListPopupColumn {
-                    if (selecting) {
-                        val count = 5
-                        DropdownImpl(
-                            text = stringResource(R.string.batch_select_enabled_group),
-                            optionSize = count,
-                            isSelected = false,
-                            index = 0,
-                            onSelectedIndexChange = {
-                                showMenu = false
-                                hapticToggle(true)
-                                selected = selected + enabledShown.map { it.packageName }
-                            },
-                        )
-                        DropdownImpl(
-                            text = stringResource(R.string.batch_select_disabled_group),
-                            optionSize = count,
-                            isSelected = false,
-                            index = 1,
-                            onSelectedIndexChange = {
-                                showMenu = false
-                                hapticToggle(true)
-                                selected = selected + disabledShown.map { it.packageName }
-                            },
-                        )
-                        DropdownImpl(
-                            text = stringResource(R.string.batch_clear_selection),
-                            optionSize = count,
-                            isSelected = false,
-                            index = 2,
-                            onSelectedIndexChange = {
-                                showMenu = false
-                                selected = emptySet()
-                            },
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                        )
-                        DropdownImpl(
-                            text = stringResource(R.string.batch_enable_selected_n, selected.size),
-                            optionSize = count,
-                            isSelected = false,
-                            index = 3,
-                            onSelectedIndexChange = {
-                                showMenu = false
-                                pendingBatch = BatchAction.ENABLE
-                            },
-                        )
-                        DropdownImpl(
-                            text = stringResource(R.string.batch_disable_selected_n, selected.size),
-                            optionSize = count,
-                            isSelected = false,
-                            index = 4,
-                            onSelectedIndexChange = {
-                                showMenu = false
-                                pendingBatch = BatchAction.DISABLE
-                            },
-                        )
-                    } else {
-                        // 选项总数影响首尾圆角，固定为 5。
-                        val count = 5
+        }
+    }
 
-                        DropdownImpl(
-                            text = stringResource(R.string.menu_show_system),
-                            optionSize = count,
-                            isSelected = showSystemApps,
-                            index = 0,
-                            onSelectedIndexChange = {
-                                hapticToggle(!showSystemApps)
-                                showSystemApps = !showSystemApps
-                                store.setShowSystemApps(showSystemApps)
-                            },
-                        )
+    // 更多菜单（玻璃下拉弹层）：全屏叠加层宿主，锚点在顶栏按钮。
+        GlassDropdownPopup(
+            show = showMenu,
+            onDismissRequest = { showMenu = false },
+            anchorBounds = menuAnchorBounds,
+            backdrop = glassBackdrop,
+        ) {
+            ListPopupColumn {
+                if (selecting) {
+                    val count = 5
+                    GlassMenuItem(
+                        text = stringResource(R.string.batch_select_enabled_group),
+                        optionSize = count,
+                        isSelected = false,
+                        index = 0,
+                        onSelectedIndexChange = {
+                            showMenu = false
+                            hapticToggle(true)
+                            selected = selected + enabledShown.map { it.packageName }
+                        },
+                    )
+                    GlassMenuItem(
+                        text = stringResource(R.string.batch_select_disabled_group),
+                        optionSize = count,
+                        isSelected = false,
+                        index = 1,
+                        onSelectedIndexChange = {
+                            showMenu = false
+                            hapticToggle(true)
+                            selected = selected + disabledShown.map { it.packageName }
+                        },
+                    )
+                    GlassMenuItem(
+                        text = stringResource(R.string.batch_clear_selection),
+                        optionSize = count,
+                        isSelected = false,
+                        index = 2,
+                        onSelectedIndexChange = {
+                            showMenu = false
+                            selected = emptySet()
+                        },
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    GlassMenuItem(
+                        text = stringResource(R.string.batch_enable_selected_n, selected.size),
+                        optionSize = count,
+                        isSelected = false,
+                        index = 3,
+                        onSelectedIndexChange = {
+                            showMenu = false
+                            pendingBatch = BatchAction.ENABLE
+                        },
+                    )
+                    GlassMenuItem(
+                        text = stringResource(R.string.batch_disable_selected_n, selected.size),
+                        optionSize = count,
+                        isSelected = false,
+                        index = 4,
+                        onSelectedIndexChange = {
+                            showMenu = false
+                            pendingBatch = BatchAction.DISABLE
+                        },
+                    )
+                } else {
+                    // 选项总数影响首尾圆角，固定为 5。
+                    val count = 5
 
-                        HorizontalDivider(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                        )
+                    GlassMenuItem(
+                        text = stringResource(R.string.menu_show_system),
+                        optionSize = count,
+                        isSelected = showSystemApps,
+                        index = 0,
+                        onSelectedIndexChange = {
+                            hapticToggle(!showSystemApps)
+                            showSystemApps = !showSystemApps
+                            store.setShowSystemApps(showSystemApps)
+                        },
+                    )
 
-                        DropdownImpl(
-                            text = stringResource(R.string.sort_install_time),
-                            optionSize = count,
-                            isSelected = sortMode == SortMode.INSTALL_TIME,
-                            index = 1,
-                            onSelectedIndexChange = {
-                                if (sortMode != SortMode.INSTALL_TIME) hapticToggle(true)
-                                sortMode = SortMode.INSTALL_TIME
-                                store.setSortMode(sortMode.name)
-                            },
-                        )
-                        DropdownImpl(
-                            text = stringResource(R.string.sort_alphabet),
-                            optionSize = count,
-                            isSelected = sortMode == SortMode.ALPHABET,
-                            index = 2,
-                            onSelectedIndexChange = {
-                                if (sortMode != SortMode.ALPHABET) hapticToggle(true)
-                                sortMode = SortMode.ALPHABET
-                                store.setSortMode(sortMode.name)
-                            },
-                        )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
 
-                        HorizontalDivider(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                        )
+                    GlassMenuItem(
+                        text = stringResource(R.string.sort_install_time),
+                        optionSize = count,
+                        isSelected = sortMode == SortMode.INSTALL_TIME,
+                        index = 1,
+                        onSelectedIndexChange = {
+                            if (sortMode != SortMode.INSTALL_TIME) hapticToggle(true)
+                            sortMode = SortMode.INSTALL_TIME
+                            store.setSortMode(sortMode.name)
+                        },
+                    )
+                    GlassMenuItem(
+                        text = stringResource(R.string.sort_alphabet),
+                        optionSize = count,
+                        isSelected = sortMode == SortMode.ALPHABET,
+                        index = 2,
+                        onSelectedIndexChange = {
+                            if (sortMode != SortMode.ALPHABET) hapticToggle(true)
+                            sortMode = SortMode.ALPHABET
+                            store.setSortMode(sortMode.name)
+                        },
+                    )
 
-                        DropdownImpl(
-                            text = stringResource(R.string.sort_asc),
-                            optionSize = count,
-                            isSelected = sortOrder == SortOrder.ASC,
-                            index = 3,
-                            onSelectedIndexChange = {
-                                if (sortOrder != SortOrder.ASC) hapticToggle(true)
-                                sortOrder = SortOrder.ASC
-                                store.setSortOrder(sortOrder.name)
-                            },
-                        )
-                        DropdownImpl(
-                            text = stringResource(R.string.sort_desc),
-                            optionSize = count,
-                            isSelected = sortOrder == SortOrder.DESC,
-                            index = 4,
-                            onSelectedIndexChange = {
-                                if (sortOrder == SortOrder.DESC) return@DropdownImpl
-                                hapticToggle(true)
-                                sortOrder = SortOrder.DESC
-                                store.setSortOrder(sortOrder.name)
-                            },
-                        )
-                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+
+                    GlassMenuItem(
+                        text = stringResource(R.string.sort_asc),
+                        optionSize = count,
+                        isSelected = sortOrder == SortOrder.ASC,
+                        index = 3,
+                        onSelectedIndexChange = {
+                            if (sortOrder != SortOrder.ASC) hapticToggle(true)
+                            sortOrder = SortOrder.ASC
+                            store.setSortOrder(sortOrder.name)
+                        },
+                    )
+                    GlassMenuItem(
+                        text = stringResource(R.string.sort_desc),
+                        optionSize = count,
+                        isSelected = sortOrder == SortOrder.DESC,
+                        index = 4,
+                        onSelectedIndexChange = {
+                            if (sortOrder == SortOrder.DESC) return@GlassMenuItem
+                            hapticToggle(true)
+                            sortOrder = SortOrder.DESC
+                            store.setSortOrder(sortOrder.name)
+                        },
+                    )
                 }
             }
         }
     }
+}
+
+/**
+ * 玻璃菜单行 —— GlassPopupItem 的兼容包装。
+ *
+ * 旧 DropdownImpl 自带不透明行背景（dropdownColors.containerColor，为不透明弹层
+ * 设计），放进玻璃弹层会把玻璃质感整块盖住（同 Card→GlassCard 的问题）。玻璃行用
+ * GlassPopupItem：透明背景、选中勾选、按压高亮。包装保持旧 DropdownImpl 的调用签名，
+ * optionSize/index 只是旧接口遗留，玻璃行不需要首尾圆角与索引。
+ */
+@Composable
+private fun GlassMenuItem(
+    text: String,
+    optionSize: Int,
+    isSelected: Boolean,
+    index: Int,
+    onSelectedIndexChange: (Int) -> Unit,
+) {
+    GlassPopupItem(
+        text = text,
+        selected = isSelected,
+        onClick = { onSelectedIndexChange(index) },
+    )
 }
 
 /** 重启弹窗里的一组目标：标题 + 说明 + 可滚动的应用名列表 */
