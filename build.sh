@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 构建 MIUI Blank Pass Ultra（空值权限）：Miuix Compose UI + libxposed modern 模块
 #
-# 默认出 release（R8 + 资源压缩）。debug 版没有优化，Compose 滚动会明显掉帧，
-# 只有排查问题时才用 ./build.sh debug。
+# PR 版 release 不开混淆加固（见 app/build.gradle.kts 注释），构建快；发行版再开
+# R8 + 资源压缩。debug 版仅排查问题时用 ./build.sh debug。
 #
 # 需要：JDK 17、Android SDK（compileSdk 37）。
 # 找不到 gradle 时可以用 GRADLE_BIN=/path/to/gradle 指定。

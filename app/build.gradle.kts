@@ -58,10 +58,11 @@ android {
             if (signStoreFileName != null) signingConfig = signingConfigs.getByName("release")
         }
         getByName("release") {
-            // 卡顿/掉帧主要来自未优化的 debug 字节码：release 开 R8 + 资源压缩，
-            // Compose 的运行时开销会明显下降。
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // PR 版暂关混淆加固与资源压缩（编译提速）；发行版再开。
+            // 关掉后仍是 release 优化字节码，Compose 运行时性能不受影响，
+            // 只是 APK 不做代码混淆/压缩、体积更大。
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
