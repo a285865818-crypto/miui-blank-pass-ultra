@@ -55,10 +55,6 @@ object AppThemeState {
     var predictiveBack by mutableStateOf(true)
         private set
 
-    /** 高级材质：澎湃风格玻璃 / 渐变模糊 */
-    var advancedMaterial by mutableStateOf(false)
-        private set
-
     private var initialized = false
 
     @Synchronized
@@ -67,7 +63,6 @@ object AppThemeState {
         initialized = true
         mode = ThemeMode.of(store.darkMode())
         predictiveBack = store.predictiveBack()
-        advancedMaterial = store.advancedMaterial()
 
         val code = store.language()
         languageCode = code
@@ -106,11 +101,6 @@ object AppThemeState {
     fun setPredictiveBack(store: Store, enabled: Boolean) {
         predictiveBack = enabled
         store.setPredictiveBack(enabled)
-    }
-
-    fun setAdvancedMaterial(store: Store, enabled: Boolean) {
-        advancedMaterial = enabled
-        store.setAdvancedMaterial(enabled)
     }
 
     fun selectLanguage(store: Store, code: String) {

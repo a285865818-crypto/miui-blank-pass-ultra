@@ -19,7 +19,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 object Glass {
     fun supported(): Boolean = runCatching { isRuntimeShaderSupported() }.getOrDefault(false)
-    fun active(): Boolean = AppThemeState.advancedMaterial && supported()
+
+    /** 玻璃外观恒开：仅在 shader 不支持的设备上由组件自动降级（无用户开关）。 */
+    fun active(): Boolean = supported()
 }
 
 /** 给内容容器挂背景层（抓取真实内容，供顶栏 / 按钮玻璃材质采样）。 */

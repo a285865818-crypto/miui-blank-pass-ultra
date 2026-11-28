@@ -259,18 +259,8 @@ fun ThemePage(store: Store, onBack: () -> Unit) {
                         .padding(horizontal = 12.dp)
                         .padding(bottom = 12.dp),
                 ) {
-                    SwitchPreference(
-                        title = stringResource(R.string.advanced_material),
-                        summary = if (Glass.supported()) {
-                            stringResource(R.string.advanced_material_desc)
-                        } else {
-                            stringResource(R.string.advanced_material_unsupported)
-                        },
-                        checked = AppThemeState.advancedMaterial,
-                        enabled = Glass.supported(),
-                        onCheckedChange = { AppThemeState.setAdvancedMaterial(store, it) },
-                    )
-                    HorizontalDivider()
+                    // 高级材质开关已移除：玻璃外观/渐进模糊恒开（仅 Glass.supported()
+                    // 硬件不支持时由组件自动降级），不需要用户手动关。
                     SwitchPreference(
                         title = stringResource(R.string.predictive_back),
                         summary = stringResource(R.string.predictive_back_desc),
