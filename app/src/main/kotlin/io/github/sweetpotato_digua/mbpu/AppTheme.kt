@@ -17,9 +17,9 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.text.layoutDirection
+import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.darkColorScheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme
+import top.yukonga.miuix.kmp.theme.ThemeController
 import java.util.Locale
 
 /** 主题模式 */
@@ -136,7 +136,19 @@ fun AppTheme(content: @Composable () -> Unit) {
         ThemeMode.LIGHT -> false
         ThemeMode.SYSTEM -> isSystemInDarkTheme()
     }
-    val colors = remember(dark) { if (dark) darkColorScheme() else lightColorScheme() }
+    // 官方主题控制器：ColorSchemeMode 承接用户的深浅选择（System/Light/Dark），
+    // 色板解析、Monet 动态取色与指示器全走官方管线；不再手动拼 lightColorScheme/darkColorScheme
+    //（skill：固定色板只用于品牌色或预览测试）。ThemeController 的属性为只读，
+    // mode 变化时按 key 重建控制器。
+    val controller = remember(AppThemeState.mode) {
+        ThemeController(
+            colorSchemeMode = when (AppThemeState.mode) {
+                ThemeMode.DARK -> ColorSchemeMode.Dark
+                ThemeMode.LIGHT -> ColorSchemeMode.Light
+                ThemeMode.SYSTEM -> ColorSchemeMode.System
+            },
+        )
+    }
 
     val locale = AppThemeState.locale
     val context = LocalContext.current
@@ -164,6 +176,6 @@ fun AppTheme(content: @Composable () -> Unit) {
         LocalContext provides localizedContext,
         LocalLayoutDirection provides direction,
     ) {
-        MiuixTheme(colors = colors) { content() }
+        MiuixTheme(controller = controller) { content() }
     }
 }

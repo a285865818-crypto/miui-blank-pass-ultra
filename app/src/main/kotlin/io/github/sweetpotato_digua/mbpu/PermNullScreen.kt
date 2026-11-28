@@ -123,12 +123,11 @@ import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.PullToRefreshState
 import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SearchBar
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.Snackbar
+import top.yukonga.miuix.kmp.basic.SnackbarHost
+import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.Switch
-import top.yukonga.miuix.kmp.basic.SnackbarData
-import top.yukonga.miuix.kmp.basic.SnackbarDuration
-import top.yukonga.miuix.kmp.basic.SnackbarVisuals
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
@@ -233,11 +232,8 @@ internal fun PermNullScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // 自己控制提示条的显示与文本：Miuix 的 SnackbarHost 用滑动进出且位置固定在
-    // Scaffold 槽位，无法改成淡入淡出，所以这里自行托管可见性与续期。
-    var snackbarText by remember { mutableStateOf("") }
-    var snackbarVisible by remember { mutableStateOf(false) }
-    var snackbarTick by remember { mutableIntStateOf(0) }
+    // 官方 SnackbarHost + SnackbarHostState：进出动画、滑动关闭、底部定位全走官方实现。
+    val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = MiuixScrollBehavior()
     // 与 Miuix Switch 内部一致的振动来源（Compose 官方 LocalHapticFeedback）
     val haptic = LocalHapticFeedback.current
@@ -343,10 +339,11 @@ internal fun PermNullScreen(
     }
 
     fun notify(message: String) {
-        // 只保留最新一条：文本替换 + tick 递增，LaunchedEffect 重新计时。
-        snackbarText = message
-        snackbarVisible = true
-        snackbarTick++
+        // 只保留最新一条：先关掉当前提示条，再显示新消息（showSnackbar 自带超时隐藏）。
+        scope.launch {
+            snackbarHostState.newestSnackbarData()?.dismiss()
+            snackbarHostState.showSnackbar(message)
+        }
     }
 
     /** 记录一次搜索；去重、最新优先，最多 10 条。 */
@@ -579,13 +576,6 @@ internal fun PermNullScreen(
         home.toast = null
     }
 
-    // 提示条自动隐藏；tick 变化即重新计时，实现"新消息顶掉旧消息"。
-    LaunchedEffect(snackbarTick) {
-        if (!snackbarVisible) return@LaunchedEffect
-        delay(3200)
-        snackbarVisible = false
-    }
-
     // N14 修复：语言切换后清空本地化文案，让状态重新按当前语言生成。
     // 原来 rootStatus/statusText 一旦非空就永远保留旧语言，直到手动刷新。
     LaunchedEffect(home.labelsLocale) {
@@ -806,6 +796,7 @@ internal fun PermNullScreen(
                 },
             )
         },
+        snackbarHost = { SnackbarHost(state = snackbarHostState) },
     ) { innerPadding ->
         // 外层不录制，只做叠加层宿主；内层才挂 layerBackdrop。
         // 回顶按钮必须在外层：它自己也要 textureBlur 读 backdrop，
@@ -846,44 +837,40 @@ internal fun PermNullScreen(
                     ),
                 ) {
                 item(key = "search") {
-                    InputField(
-                        query = queryInput,
-                        onQueryChange = {
-                            queryInput = it
-                            // 有输入内容时也让历史可见，方便直接替换关键词。
-                            historyVisible = true
-                        },
-                        onSearch = {
-                            queryInput = it
-                            query = it
-                            rememberSearch(it)
-                            historyVisible = false
-                        },
-                        // expanded / onExpandedChange 是 InputField 的必填参数：
-                        // 主页搜索不需要展开成全屏输入，固定折叠并空实现。
-                        expanded = false,
-                        onExpandedChange = {},
+                    // 官方 SearchBar：展开包装（展开动画、聚焦联动）归官方，
+                    // 输入框用 InputField，历史面板放 content 槽。
+                    SearchBar(
+                        expanded = historyVisible && history.isNotEmpty(),
+                        onExpandedChange = { historyVisible = it },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp)
                             .padding(bottom = 12.dp),
-                        label = stringResource(R.string.search_hint),
-                    )
-                    AnimatedVisibility(
-                        visible = history.isNotEmpty() && historyVisible,
-                        enter = expandVertically(
-                            animationSpec = folmeSpring(damping = 0.9f, response = 0.3f),
-                        ) + fadeIn(animationSpec = tween(160, easing = SinOutEasing)),
-                        exit = shrinkVertically(
-                            animationSpec = folmeSpring(damping = 0.95f, response = 0.28f),
-                        ) + fadeOut(animationSpec = tween(120, easing = AccelerateEasing())),
+                        inputField = {
+                            InputField(
+                                query = queryInput,
+                                onQueryChange = {
+                                    queryInput = it
+                                    // 有输入内容时也让历史可见，方便直接替换关键词。
+                                    historyVisible = true
+                                },
+                                onSearch = {
+                                    queryInput = it
+                                    query = it
+                                    rememberSearch(it)
+                                    historyVisible = false
+                                },
+                                expanded = historyVisible && history.isNotEmpty(),
+                                onExpandedChange = { historyVisible = it },
+                                label = stringResource(R.string.search_hint),
+                            )
+                        },
                     ) {
                         // 对齐小米系统设置：左标题 + 右侧清除，下方紧凑胶囊左对齐换行。
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp)
-                                .padding(bottom = 12.dp),
+                                .padding(top = 8.dp),
                         ) {
                             Row(
                                 modifier = Modifier
@@ -1448,36 +1435,6 @@ internal fun PermNullScreen(
                             .rotate(-90f),
                     )
                 }
-            }
-
-            // 提示条：自己托管，用淡入淡出替代 Miuix SnackbarHost 的滑动进出。
-            // 放在内容层顶部对齐底部并避开系统导航区，不会被手势条压住。
-            AnimatedVisibility(
-                visible = snackbarVisible,
-                enter = fadeIn(animationSpec = tween(durationMillis = 420)),
-                exit = fadeOut(animationSpec = tween(durationMillis = 520)),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-            ) {
-                // 用 Miuix 默认配色（反色深底浅字），保证对比度。
-                Snackbar(
-                    data = remember(snackbarText) {
-                        object : SnackbarData {
-                            override val visuals = SnackbarVisuals(
-                                message = snackbarText,
-                                actionLabel = null,
-                                withDismissAction = false,
-                                duration = SnackbarDuration.Short,
-                            )
-
-                            override suspend fun dismiss() = Unit
-
-                            override suspend fun performAction() = Unit
-                        }
-                    },
-                )
             }
 
             // 说明弹窗：圆点含义 + 文件类屏蔽的风险提示。

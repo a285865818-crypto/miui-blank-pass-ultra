@@ -222,27 +222,20 @@ private fun BlockStatsContent(snapshot: BlockStatsSnapshot) {
     }
 }
 
+/** 统计行 —— 官方 BasicComponent：标签在标题位、值在尾部动作位（横排键值）。 */
 @Composable
 private fun StatsValueRow(title: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onBackgroundVariant,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = value,
-            style = MiuixTheme.textStyles.body1,
-            color = MiuixTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(start = 12.dp),
-        )
-    }
+    BasicComponent(
+        title = title,
+        insideMargin = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        endActions = {
+            Text(
+                text = value,
+                style = MiuixTheme.textStyles.body1,
+                color = MiuixTheme.colorScheme.onBackground,
+            )
+        },
+    )
 }
 
 @Composable

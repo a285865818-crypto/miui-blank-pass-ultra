@@ -65,6 +65,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -918,26 +919,14 @@ private fun hookStatText(stat: HookStat): String {
     return stringResource(R.string.hook_child_process, main, "${child.ok}/${child.total}")
 }
 
-/** 诊断信息行：标题 + 值。 */
+/** 诊断行 —— 官方 BasicComponent 标准行；长值不限行完整显示。 */
 @Composable
 private fun DebugRow(title: String, value: String) {
-    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onBackgroundVariant,
-        )
-        Text(
-            text = value,
-            style = MiuixTheme.textStyles.body1,
-            color = MiuixTheme.colorScheme.onBackground,
-            // 值可能是 LSPosed 版本串、SAF 路径、缓存统计这类没有断词点的长串，
-            // 窄屏上会溢出卡片；允许两行后截断。
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 2.dp),
-        )
-    }
+    BasicComponent(
+        title = value,
+        summary = title,
+        insideMargin = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+    )
 }
 
 /** SAF tree 的显示名：内部存储 / 具体目录名。 */

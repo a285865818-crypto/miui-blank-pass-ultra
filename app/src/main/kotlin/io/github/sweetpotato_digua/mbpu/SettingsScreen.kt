@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
@@ -495,21 +496,14 @@ private fun themeSummaryRes(mode: ThemeMode): Int = when (mode) {
     ThemeMode.LIGHT -> R.string.theme_light
 }
 
+/** 信息行 —— 官方 BasicComponent 标准行（headline1 主值 + body2 标签）。 */
 @Composable
 private fun InfoRow(title: String, value: String) {
-    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onBackgroundVariant,
-        )
-        Text(
-            text = value,
-            style = MiuixTheme.textStyles.body1,
-            color = MiuixTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(top = 2.dp),
-        )
-    }
+    BasicComponent(
+        title = value,
+        summary = title,
+        insideMargin = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+    )
 }
 
 /**

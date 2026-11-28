@@ -75,8 +75,9 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        // JVM 21：miuix-nav 的 inline DSL 按 21 构建（rc01 上游 JDK 21），低版本无法内联。
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     // native 安全层：so 由 build_native.sh 手动编译（NDK 的 ndk-build/cmake
@@ -100,7 +101,7 @@ android {
 
 kotlin {
     compilerOptions {
-        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21
     }
 }
 
@@ -128,4 +129,6 @@ dependencies {
     implementation("top.yukonga.miuix.kmp:miuix-material-android:0.9.5-rc01")
     // rc01 官方 Glass 组件家族（GlassTopAppBar、GlassIconButton），替掉自研玻璃顶栏/圆钮。
     implementation("top.yukonga.miuix.kmp:miuix-glass-android:0.9.5-rc01")
+    // 官方页面栈与转场（NavDisplay + Expansion），替掉自研导航栈。
+    implementation("top.yukonga.miuix.kmp:miuix-nav-android:0.9.5-rc01")
 }

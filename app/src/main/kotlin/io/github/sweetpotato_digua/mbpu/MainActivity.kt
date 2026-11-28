@@ -21,6 +21,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
+import top.yukonga.miuix.kmp.nav.core.NavDisplay
+import top.yukonga.miuix.kmp.nav.core.navBackStackOf
+import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 
 class MainActivity : ComponentActivity() {
 
@@ -42,22 +45,19 @@ class MainActivity : ComponentActivity() {
  */
 @Composable
 fun AppRoot(store: Store, onExit: () -> Unit) {
-    val nav = remember { NavStackState() }
+    // 官方 miuix-nav 页面栈：NavBackStack + NavDisplay（Expansion 展开转场、
+    // 系统/预测返回由 NavDisplay 的 onBack 统一处理）。
+    val backStack = remember { navBackStackOf(Route.Home) }
 
     // 页面栈持久化：配置变更或 Activity 重建后不会莫名跳回主页
     var savedKeys by rememberSaveable { mutableStateOf(listOf(Route.Home.key)) }
     LaunchedEffect(Unit) {
-        if (savedKeys.size > 1) nav.restore(savedKeys)
+        if (savedKeys.size > 1) {
+            backStack.clear()
+            savedKeys.map { Route.of(it) }.forEach { backStack.add(it) }
+        }
+        snapshotFlow { backStack.map { (it as Route).key } }.collect { savedKeys = it }
     }
-    LaunchedEffect(Unit) {
-        snapshotFlow { nav.keys() }.collect { savedKeys = it }
-    }
-
-    PredictiveBackHost(
-        nav = nav,
-        enabled = AppThemeState.predictiveBack,
-        onExitApp = onExit,
-    )
 
     // 主页状态提升到这里：从设置返回时保留列表与模块状态。
     // 大列表不塞进 Bundle；配置变更后的重建会在 IO 线程重新读取。
@@ -139,22 +139,28 @@ fun AppRoot(store: Store, onExit: () -> Unit) {
         }
     }
 
-    AppNavHost(nav = nav) { route ->
-        when (route) {
-            Route.Home -> PermNullScreen(
+    NavDisplay(
+        backStack = backStack,
+        transition = NavTransitions.Expansion,
+        onBack = { if (backStack.size > 1) backStack.removeLastOrNull() else onExit() },
+    ) {
+        entry<Route.Home> {
+            PermNullScreen(
                 store = store,
                 home = home,
                 listState = homeListState,
                 pullToRefreshState = pullToRefreshState,
                 onRefresh = ::refreshHome,
-                onOpenSettings = { fromRight -> nav.push(Route.Settings, fromRight) },
+                onOpenSettings = { backStack.add(Route.Settings) },
                 // L2：把「当前栈顶是否 Home」传给主页，被覆盖时停掉 root 轮询。
-                isHomeTop = { nav.current == Route.Home },
+                isHomeTop = { backStack.lastOrNull() == Route.Home },
             )
+        }
 
-            Route.Settings -> SettingsScreen(
+        entry<Route.Settings> {
+            SettingsScreen(
                 store = store,
-                onBack = { nav.pop() },
+                onBack = { backStack.removeLastOrNull() },
                 onConfigRestored = {
                     // 让仍在进行的旧加载失效；恢复刷新不走 refreshing guard，必须真正启动新加载。
                     loadGeneration.incrementAndGet()
@@ -171,21 +177,28 @@ fun AppRoot(store: Store, onExit: () -> Unit) {
                         }
                     }
                 },
-                onOpenTheme = { fromRight -> nav.push(Route.Theme, fromRight) },
-                onOpenLanguage = { fromRight -> nav.push(Route.Language, fromRight) },
-                onOpenAbout = { fromRight -> nav.push(Route.About, fromRight) },
-                onOpenSponsor = { fromRight -> nav.push(Route.Sponsor, fromRight) },
-                onOpenDebug = { fromRight -> nav.push(Route.Debug, fromRight) },
+                onOpenTheme = { backStack.add(Route.Theme) },
+                onOpenLanguage = { backStack.add(Route.Language) },
+                onOpenAbout = { backStack.add(Route.About) },
+                onOpenSponsor = { backStack.add(Route.Sponsor) },
+                onOpenDebug = { backStack.add(Route.Debug) },
             )
+        }
 
-            Route.Theme -> ThemePage(
-                store = store,
-                onBack = { nav.pop() },
-            )
-            Route.Language -> LanguagePage(store = store, onBack = { nav.pop() })
-            Route.About -> AboutScreen(store = store, onBack = { nav.pop() })
-            Route.Sponsor -> SponsorScreen(onBack = { nav.pop() })
-            Route.Debug -> DebugScreen(store = store, onBack = { nav.pop() })
+        entry<Route.Theme> {
+            ThemePage(store = store, onBack = { backStack.removeLastOrNull() })
+        }
+        entry<Route.Language> {
+            LanguagePage(store = store, onBack = { backStack.removeLastOrNull() })
+        }
+        entry<Route.About> {
+            AboutScreen(store = store, onBack = { backStack.removeLastOrNull() })
+        }
+        entry<Route.Sponsor> {
+            SponsorScreen(onBack = { backStack.removeLastOrNull() })
+        }
+        entry<Route.Debug> {
+            DebugScreen(store = store, onBack = { backStack.removeLastOrNull() })
         }
     }
 }
