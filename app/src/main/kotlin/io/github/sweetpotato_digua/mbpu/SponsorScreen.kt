@@ -11,8 +11,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
@@ -60,9 +62,16 @@ fun SponsorScreen(onBack: () -> Unit) {
             BitmapFactory.decodeResource(resources, R.drawable.sponsor_qr, opts)?.asImageBitmap()
         }
     }
+    val pageScroll = rememberScrollState()
+    val isScrolledSponsor by remember { derivedStateOf { pageScroll.value > 0 } }
     Scaffold(
         topBar = {
-            SettingsTopBar(stringResource(R.string.sponsor), onBack, glassBackdrop)
+            SettingsTopBar(
+                stringResource(R.string.sponsor),
+                onBack,
+                glassBackdrop,
+                isContentScrolled = isScrolledSponsor,
+            )
         },
     ) { innerPadding ->
         Column(
@@ -72,7 +81,7 @@ fun SponsorScreen(onBack: () -> Unit) {
                     top = innerPadding.calculateTopPadding(),
                     bottom = innerPadding.calculateBottomPadding(),
                 )
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(pageScroll),
         ) {
             SmallTitle(
                 text = stringResource(R.string.sponsor_title),

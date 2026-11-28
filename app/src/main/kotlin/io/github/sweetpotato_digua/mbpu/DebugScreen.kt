@@ -32,6 +32,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -196,15 +197,22 @@ fun DebugScreen(store: Store, onBack: () -> Unit) {
         }
     }
 
+    val pageScroll = rememberScrollState()
+    val isScrolledDebug by remember { derivedStateOf { pageScroll.value > 0 } }
     Scaffold(
         topBar = {
-            SettingsTopBar(stringResource(R.string.debug_title), onBack, glassBackdrop)
+            SettingsTopBar(
+                stringResource(R.string.debug_title),
+                onBack,
+                glassBackdrop,
+                isContentScrolled = isScrolledDebug,
+            )
         },
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .asGlassSource(glassBackdrop)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(pageScroll)
                 .padding(
                     top = innerPadding.calculateTopPadding(),
                     bottom = innerPadding.calculateBottomPadding(),

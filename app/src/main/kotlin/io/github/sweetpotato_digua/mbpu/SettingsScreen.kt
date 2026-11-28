@@ -5,9 +5,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -58,9 +61,21 @@ fun SettingsScreen(
     }
 
     val glassBackdrop = rememberGlassBackdrop()
+    // 顶栏玻璃跟随滚动：列表离开顶部才浮现（顶部=普通外观，官方语义）。
+    val listState = rememberLazyListState()
+    val isScrolled by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
+        }
+    }
     Scaffold(
         topBar = {
-            SettingsTopBar(stringResource(R.string.settings), onBack, glassBackdrop)
+            SettingsTopBar(
+                stringResource(R.string.settings),
+                onBack,
+                glassBackdrop,
+                isContentScrolled = isScrolled,
+            )
         },
     ) { innerPadding ->
         val top = innerPadding.calculateTopPadding()
@@ -69,6 +84,7 @@ fun SettingsScreen(
         val showSponsor = sponsorVisible()
 
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .onSizeChanged { containerWidthPx[0] = it.width.toFloat() }
                 .asGlassSource(glassBackdrop),
@@ -119,7 +135,11 @@ fun SettingsScreen(
             }
 
             item {
-                ConfigBackupSection(store = store, onConfigRestored = onConfigRestored)
+                ConfigBackupSection(
+                    store = store,
+                    onConfigRestored = onConfigRestored,
+                    backdrop = glassBackdrop,
+                )
             }
 
             // 赞赏码是微信的，非中文界面扫不动，entry 只在中文下出现。
@@ -182,15 +202,30 @@ fun ThemePage(store: Store, onBack: () -> Unit) {
     val predictiveBack = AppThemeState.predictiveBack
 
     val glassBackdrop = rememberGlassBackdrop()
+    val themeListState = rememberLazyListState()
+    val isScrolledTheme by remember {
+        derivedStateOf {
+            themeListState.firstVisibleItemIndex > 0 ||
+                themeListState.firstVisibleItemScrollOffset > 0
+        }
+    }
     Scaffold(
         topBar = {
-            SettingsTopBar(stringResource(R.string.theme), onBack, glassBackdrop)
+            SettingsTopBar(
+                stringResource(R.string.theme),
+                onBack,
+                glassBackdrop,
+                // 内容不满一屏时列表滚不动，isScrolled 恒 false：
+                // 固定页面顶栏永远是普通外观，不显示玻璃。
+                isContentScrolled = isScrolledTheme,
+            )
         },
     ) { innerPadding ->
         val top = innerPadding.calculateTopPadding()
         val bottom = innerPadding.calculateBottomPadding()
 
         LazyColumn(
+            state = themeListState,
             modifier = Modifier.asGlassSource(glassBackdrop),
             contentPadding = PaddingValues(top = top, bottom = bottom + 12.dp),
         ) {
@@ -258,15 +293,28 @@ fun LanguagePage(store: Store, onBack: () -> Unit) {
     }
 
     val glassBackdrop = rememberGlassBackdrop()
+    val langListState = rememberLazyListState()
+    val isScrolledLang by remember {
+        derivedStateOf {
+            langListState.firstVisibleItemIndex > 0 ||
+                langListState.firstVisibleItemScrollOffset > 0
+        }
+    }
     Scaffold(
         topBar = {
-            SettingsTopBar(stringResource(R.string.app_language), onBack, glassBackdrop)
+            SettingsTopBar(
+                stringResource(R.string.app_language),
+                onBack,
+                glassBackdrop,
+                isContentScrolled = isScrolledLang,
+            )
         },
     ) { innerPadding ->
         val top = innerPadding.calculateTopPadding()
         val bottom = innerPadding.calculateBottomPadding()
 
         LazyColumn(
+            state = langListState,
             modifier = Modifier.asGlassSource(glassBackdrop),
             contentPadding = PaddingValues(top = top, bottom = bottom + 12.dp),
         ) {
@@ -304,9 +352,16 @@ fun AboutScreen(store: Store, onBack: () -> Unit) {
     }
 
     val glassBackdrop = rememberGlassBackdrop()
+    val aboutScroll = rememberScrollState()
+    val isScrolledAbout by remember { derivedStateOf { aboutScroll.value > 0 } }
     Scaffold(
         topBar = {
-            SettingsTopBar(stringResource(R.string.about), onBack, glassBackdrop)
+            SettingsTopBar(
+                stringResource(R.string.about),
+                onBack,
+                glassBackdrop,
+                isContentScrolled = isScrolledAbout,
+            )
         },
     ) { innerPadding ->
         Column(
@@ -316,7 +371,7 @@ fun AboutScreen(store: Store, onBack: () -> Unit) {
                     top = innerPadding.calculateTopPadding(),
                     bottom = innerPadding.calculateBottomPadding(),
                 )
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(aboutScroll),
         ) {
             SmallTitle(
                 text = stringResource(R.string.about_app),
@@ -413,11 +468,15 @@ internal fun SettingsTopBar(
     title: String,
     onBack: () -> Unit,
     backdrop: top.yukonga.miuix.kmp.blur.LayerBackdrop? = null,
+    // 显式滚动状态：页面在顶部/不可滚动的固定页面恒 false，
+    // 按钮保持普通外观、无渐变带（官方语义）；滚动离开顶部才浮现玻璃。
+    isContentScrolled: Boolean = false,
 ) {
     GlassTopAppBar(
         title = title,
         expandable = false,
         backdrop = backdrop,
+        isContentScrolled = isContentScrolled,
         navigationIcon = {
             GlassIconButton(onClick = onBack) {
                 Icon(

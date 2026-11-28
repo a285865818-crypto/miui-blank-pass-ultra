@@ -131,6 +131,8 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.ArrowRight
+import top.yukonga.miuix.kmp.glass.GlassBottomSheet
+import top.yukonga.miuix.kmp.glass.GlassDialog
 import top.yukonga.miuix.kmp.glass.GlassFloatingActionButton
 import top.yukonga.miuix.kmp.glass.GlassIconButton
 import top.yukonga.miuix.kmp.glass.GlassTopAppBar
@@ -751,6 +753,9 @@ internal fun PermNullScreen(
                 },
                 expandable = false,
                 backdrop = glassBackdrop,
+                // 显式滚动状态：页面在顶部时按钮是普通外观、无渐变带（官方语义），
+                // 滚动离开顶部才浮现玻璃材质；回顶后自动收回。
+                isContentScrolled = showBackToTop,
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     // 选择模式下左上角变成取消；正常时是设置入口。
@@ -1409,11 +1414,12 @@ internal fun PermNullScreen(
                     }
                 }
             val target = editing
-            OverlayBottomSheet(
+            GlassBottomSheet(
                 title = target?.label ?: "",
                 show = target != null,
+                backdrop = glassBackdrop,
                 startAction = {
-                    IconButton(onClick = { editing = null }) {
+                    GlassIconButton(onClick = { editing = null }) {
                         Icon(
                             imageVector = MiuixIcons.Close,
                             contentDescription = stringResource(R.string.cancel),
@@ -1422,15 +1428,15 @@ internal fun PermNullScreen(
                     }
                 },
                 endAction = {
-                    IconButton(
+                    GlassIconButton(
                         onClick = {
-                            val app = target ?: return@IconButton
+                            val app = target ?: return@GlassIconButton
                             val before = masks[app.packageName] ?: 0
                             if (before != editBaseline) {
                                 editing = null
                                 reloadMasks()
                                 notify(context.getString(R.string.toast_config_conflict))
-                                return@IconButton
+                                return@GlassIconButton
                             }
                             var mask = 0
                             for (id in draft) mask = mask or Config.bit(id)
@@ -1458,13 +1464,13 @@ internal fun PermNullScreen(
                     }
                 },
                 onDismissRequest = { editing = null },
-            ) {
+            ) { innerPadding ->
                 if (target != null) {
                     // 官方 example 的弹层内容用 LazyColumn，靠弹层自身高度约束滚动。
                     // 用 NoIndication 覆盖整棵子树：按压高亮是矩形，Card 内部 Column
                     // 不裁剪圆角，会露出方角白块。
                     CompositionLocalProvider(LocalIndication provides NoIndication) {
-                        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                        LazyColumn(modifier = Modifier.fillMaxWidth().padding(innerPadding)) {
                             item {
                                 // 规则统一，只在顶部说明一次，避免每行重复既占屏又难扫读。
                                 SmallTitle(
@@ -1597,11 +1603,11 @@ internal fun PermNullScreen(
             // OverlayDialog 内部把遮罩的 enter/exit 都设成 None，导致点空白/按钮时
             // 遮罩瞬间消失、内容还在播动画，观感就是"一下子掉下去"。
             // 这里在它外层再套一层 DialogLayout，让遮罩跟随内容做淡入淡出。
-            SmoothDialog(show = showHelp) {
-                OverlayDialog(
-                show = showHelp,
-                title = stringResource(R.string.help_title),
+            GlassDialog(
                 onDismissRequest = { showHelp = false },
+                show = showHelp,
+                backdrop = glassBackdrop,
+                title = stringResource(R.string.help_title),
             ) {
                 Column(modifier = Modifier.padding(top = 4.dp)) {
                     Text(
@@ -1713,18 +1719,17 @@ internal fun PermNullScreen(
                     }
                 }
                 }
-            }
 
             // 批量关闭后的重启提示：需要用户确认才进入重启确认弹窗。
-            SmoothDialog(show = askRestartAfterBatch) {
-            OverlayDialog(
-                show = askRestartAfterBatch,
-                title = stringResource(R.string.batch_restart_title),
-                summary = stringResource(R.string.batch_restart_summary),
+            GlassDialog(
                 onDismissRequest = {
                     askRestartAfterBatch = false
                     batchRestartPlan = null
                 },
+                show = askRestartAfterBatch,
+                backdrop = glassBackdrop,
+                title = stringResource(R.string.batch_restart_title),
+                summary = stringResource(R.string.batch_restart_summary),
             ) {
                 Row(modifier = Modifier.fillMaxWidth()) {
                     TextButton(
@@ -1750,12 +1755,11 @@ internal fun PermNullScreen(
                 }
                 Spacer(Modifier.height(4.dp))
             }
-            }
 
             // 批量操作确认：明确目标数量，避免误触直接关闭应用
-            SmoothDialog(show = pendingBatch != null) {
-            OverlayDialog(
+            GlassDialog(
                 show = pendingBatch != null,
+                backdrop = glassBackdrop,
                 title = when (pendingBatch) {
                     BatchAction.ENABLE -> stringResource(R.string.batch_confirm_enable_title)
                     BatchAction.DISABLE -> stringResource(R.string.batch_confirm_disable_title)
@@ -1796,12 +1800,11 @@ internal fun PermNullScreen(
                 }
                 Spacer(Modifier.height(4.dp))
             }
-            }
 
             // 一键重启前的确认
-            SmoothDialog(show = showRestartDialog) {
-            OverlayDialog(
+            GlassDialog(
                 show = showRestartDialog,
+                backdrop = glassBackdrop,
                 title = stringResource(R.string.restart_dialog_title),
                 summary = run {
                     val plan = restartPlan
@@ -1812,7 +1815,12 @@ internal fun PermNullScreen(
                         else -> stringResource(R.string.restart_will_stop, plan.total)
                     }
                 },
-                onDismissRequest = { if (!restarting) showRestartDialog = false },
+                onDismissRequest = {
+                    if (!restarting) {
+                        showRestartDialog = false
+                        restartPlan = null
+                    }
+                },
             ) {
                 Column(modifier = Modifier.padding(top = 8.dp)) {
                     val plan = restartPlan
@@ -1863,7 +1871,6 @@ internal fun PermNullScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                 }
-            }
             }
         }
     }
@@ -2390,35 +2397,5 @@ private fun openIssuePage(context: Context) {
         )
     } catch (t: Throwable) {
         android.util.Log.w("MBPU", "no activity for issue page: " + t.message)
-    }
-}
-
-/**
- * 给 Miuix 弹窗补一层带淡入淡出的遮罩。
- * OverlayDialog 内部固定用 EnterTransition.None / ExitTransition.None 渲染遮罩，
- * 关闭时遮罩瞬间消失、内容还在播退出动画，观感是"硬掉下去"。
- * 这里只接管遮罩层动画，弹窗内容与布局完全不受影响。
- */
-@Composable
-private fun SmoothDialog(
-    show: Boolean,
-    content: @Composable () -> Unit,
-) {
-    // visible 必须是稳定的 MutableState：DialogLayout 内部按引用监听它的变化来驱动
-    // 淡入淡出，若每次组合都传新实例，退场动画会被打断。这里 remember 一次后只改值。
-    val visibleState = remember { mutableStateOf(false) }
-    // SideEffect 每次重组都会执行一遍赋值，属于用副作用驱动动画状态；
-    // 改成按 show 变化触发，避免与 DialogLayout 自身的退场动画抢时序。
-    LaunchedEffect(show) { visibleState.value = show }
-    top.yukonga.miuix.kmp.utils.MiuixPopupUtils.DialogLayout(
-        visible = visibleState,
-        enterTransition = null,
-        exitTransition = null,
-        enableWindowDim = true,
-        enableAutoLargeScreen = false,
-        dimEnterTransition = fadeIn(animationSpec = tween(200)),
-        dimExitTransition = fadeOut(animationSpec = tween(220)),
-    ) {
-        content()
     }
 }

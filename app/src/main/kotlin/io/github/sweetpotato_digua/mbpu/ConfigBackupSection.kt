@@ -33,7 +33,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
+import top.yukonga.miuix.kmp.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -46,7 +46,11 @@ import java.util.Locale
 
 /** 设置页的配置备份区块；文件选择直接挂宿主 Activity，兼容 AppTheme 的 Context 包装。 */
 @Composable
-internal fun ConfigBackupSection(store: Store, onConfigRestored: () -> Unit) {
+internal fun ConfigBackupSection(
+    store: Store,
+    onConfigRestored: () -> Unit,
+    backdrop: top.yukonga.miuix.kmp.blur.Backdrop? = null,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
@@ -159,11 +163,12 @@ internal fun ConfigBackupSection(store: Store, onConfigRestored: () -> Unit) {
         }
     }
 
-    OverlayDialog(
+    GlassDialog(
+        onDismissRequest = { if (!busy) pendingRestore = null },
         show = pendingRestore != null,
+        backdrop = backdrop,
         title = stringResource(R.string.backup_restore_confirm_title),
         summary = stringResource(R.string.backup_restore_confirm_summary, pendingRestore?.size ?: 0),
-        onDismissRequest = { if (!busy) pendingRestore = null },
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             TextButton(
