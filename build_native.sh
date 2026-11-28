@@ -75,6 +75,13 @@ fi
 SRC=app/src/main/cpp/security.c
 OUT=app/src/main/jniLibs
 
+# A 项瘦身后处理：优先用宿主 aarch64 的 llvm-strip（可跨架构剥任意 ABI），
+# NDK 自带 llvm-strip 是 x86_64 host 二进制跑不动。找不到就靠 -s 链接期剥。
+STRIP_TOOL=""
+for cand in llvm-strip llvm-strip-19 llvm-strip-18 llvm-strip-17; do
+    if command -v "$cand" >/dev/null 2>&1; then STRIP_TOOL="$(command -v "$cand")"; break; fi
+done
+
 # 清掉旧产物再编（M24）：三个 ABI 必须来自同一次编译，
 # 否则部分失败会留下「一半新一半旧」的混合版本。
 rm -rf "$OUT"
@@ -88,9 +95,18 @@ build() {
     # NDK 无 libgcc，内置函数走 NDK 的 compiler-rt；resource-dir 指到 NDK 的
     # lib/clang/<ver>，clang 才能按 lib/linux/libclang_rt.builtins-<arch>-android.a
     # 解析到库（L27）。
+    # A 项瘦身：
+    #   -fvisibility=hidden  默认隐藏，导出符号只剩 JNIEXPORT（JNI_OnLoad）；
+    #   -flto                链接期优化（编译+链接同一命令，LTO 全程生效）；
+    #   -s                   链接期 --strip-all，去掉 .symtab（nm 报 no symbols）；
+    #   -ffunction-sections/-fdata-sections + --gc-sections  死代码剔除；
+    #   --exclude-libs,ALL   不把 compiler-rt 等静态库符号放进导出表。
     if ! "$CC" --target="$target" --sysroot="$SYSROOT" \
-        -shared -fPIC -fuse-ld=lld -rtlib=compiler-rt ${LLD:+--ld-path="$LLD"} \
+        -O2 -shared -fPIC -fuse-ld=lld -rtlib=compiler-rt ${LLD:+--ld-path="$LLD"} \
         -resource-dir "$RT_RESOURCEDIR" \
+        -fvisibility=hidden -flto \
+        -ffunction-sections -fdata-sections \
+        -s -Wl,--gc-sections -Wl,--exclude-libs,ALL \
         -o "$OUT/$abi/libmbpu_security.so" \
         "$SRC" -lc -llog; then
         echo "ERROR: native 编译失败：$abi ($target)，已中止且不会使用旧 so。" >&2
@@ -99,6 +115,10 @@ build() {
     if [ ! -s "$OUT/$abi/libmbpu_security.so" ]; then
         echo "ERROR: native 编译未生成有效产物：$OUT/$abi/libmbpu_security.so" >&2
         return 1
+    fi
+    # A 项：再剥一次保险（-s 已在链接期剥过，幂等）；llvm-strip 失败不阻塞。
+    if [ -n "$STRIP_TOOL" ]; then
+        "$STRIP_TOOL" --strip-all "$OUT/$abi/libmbpu_security.so" 2>/dev/null || true
     fi
     echo "$abi: $(ls -l "$OUT/$abi/libmbpu_security.so" | awk '{print $5}') bytes"
 }
