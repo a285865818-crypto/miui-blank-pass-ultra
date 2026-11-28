@@ -480,6 +480,8 @@ internal fun SettingsTopBar(
         titleBlurRadius = if (Glass.active()) GlassTopAppBarDefaults.TitleBlurRadius else 0.dp,
         stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
         buttonShadow = if (Glass.active()) GlassShadows.Regular else null,
+        // 按钮材质用面板同款 dialogGlass（官方默认 puredThinGlass 浅底上视觉平淡）。
+        material = dialogGlassMaterial(),
         navigationIcon = {
             GlassIconButton(
                 onClick = onBack,

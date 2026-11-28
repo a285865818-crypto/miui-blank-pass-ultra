@@ -5,6 +5,8 @@ import androidx.compose.ui.Modifier
 import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+import top.yukonga.miuix.kmp.glass.GlassBottomSheetDefaults
+import top.yukonga.miuix.kmp.material.GlassMaterial
 import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -23,6 +25,16 @@ object Glass {
     /** 玻璃外观恒开：仅在 shader 不支持的设备上由组件自动降级（无用户开关）。 */
     fun active(): Boolean = supported()
 }
+
+/**
+ * 面板同款玻璃材质（dialogGlass + surfaceContainer @ 72%）。
+ *
+ * 官方默认的按钮材质 puredThinGlass（白柔光/强光层）在 surface 浅底上视觉平淡、
+ * 弹层默认 popupViewGlass 同样偏实，观感都接近不透明；配置面板的 dialogGlass
+ * 是用户认可的玻璃质感，按钮与弹层统一用它（直接引用面板默认材质，保证一致）。
+ */
+@Composable
+fun dialogGlassMaterial(): GlassMaterial = GlassBottomSheetDefaults.material()
 
 /** 给内容容器挂背景层（抓取真实内容，供顶栏 / 按钮玻璃材质采样）。 */
 fun Modifier.asGlassSource(backdrop: LayerBackdrop?): Modifier =

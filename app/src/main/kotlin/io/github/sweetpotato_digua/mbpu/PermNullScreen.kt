@@ -771,6 +771,9 @@ internal fun PermNullScreen(
                 titleBlurRadius = if (Glass.active()) GlassTopAppBarDefaults.TitleBlurRadius else 0.dp,
                 stroke = if (Glass.active()) GlassTopAppBarDefaults.buttonStroke() else null,
                 buttonShadow = if (Glass.active()) GlassShadows.Regular else null,
+                // 按钮材质用面板同款 dialogGlass（官方默认 puredThinGlass 白柔光在
+                // 浅底上视觉平淡、接近不透明）。
+                material = dialogGlassMaterial(),
                 navigationIcon = {
                     // 选择模式下左上角变成取消；正常时是设置入口。
                     // GlassTopAppBar 内的 GlassIconButton 自动继承顶栏玻璃材质。
@@ -1756,7 +1759,8 @@ internal fun PermNullScreen(
             anchorBounds = menuAnchorBounds,
             backdrop = glassBackdrop,
             visuals = if (Glass.active()) {
-                GlassPopupDefaults.visuals()
+                // 弹层材质换面板同款 dialogGlass（官方默认 popupViewGlass 偏实、观感不透明）。
+                GlassPopupDefaults.visuals(material = dialogGlassMaterial())
             } else {
                 GlassPopupDefaults.visuals().copy(stroke = null, shadow = null)
             },
