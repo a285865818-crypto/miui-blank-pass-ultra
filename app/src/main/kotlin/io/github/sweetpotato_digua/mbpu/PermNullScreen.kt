@@ -1294,10 +1294,15 @@ internal fun PermNullScreen(
                 }
                     }
                 }
-            val target = editing
+            // 退出动画期间保留最后一帧内容：editing 置空后 target 仍指向最后一次
+            // 编辑的项，直到 onDismissFinished（隐藏动画完成）才释放。否则内容瞬空、
+            // 面板塌缩，视觉上就是「没有关闭动画、直接闪现消失」。
+            val lastTarget = remember { mutableStateOf<AppEntry?>(null) }
+            if (editing != null) lastTarget.value = editing
+            val target = editing ?: lastTarget.value
             GlassBottomSheet(
                 title = target?.label ?: "",
-                show = target != null,
+                show = editing != null,
                 backdrop = glassBackdrop,
                 // 关闭高级材质：无渐进模糊、无玻璃描边。
                 progressiveBlur = Glass.active(),
@@ -1348,6 +1353,7 @@ internal fun PermNullScreen(
                     }
                 },
                 onDismissRequest = { editing = null },
+                onDismissFinished = { lastTarget.value = null },
             ) { innerPadding ->
                 if (target != null) {
                     // 官方 example 的弹层内容用 LazyColumn，靠弹层自身高度约束滚动。
