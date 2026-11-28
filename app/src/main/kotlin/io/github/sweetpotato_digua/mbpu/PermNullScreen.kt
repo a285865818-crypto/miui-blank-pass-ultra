@@ -738,6 +738,8 @@ internal fun PermNullScreen(
 
     // 高级材质：backdrop 录制页面内容，供顶栏做渐变模糊
     val glassBackdrop = rememberGlassBackdrop()
+    // 更多菜单锚点（GlassIconButton 的窗口 bounds），供根叠加层里的 GlassDropdownPopup 定位。
+    var menuAnchorBounds by remember { mutableStateOf(Rect.Zero) }
 
     Scaffold(
         topBar = {
@@ -785,159 +787,20 @@ internal fun PermNullScreen(
                     }
                 },
                 actions = {
-                    // 用 GlassDropdownPopup 而不是 GlassIconDropdownMenu：后者的
-                    // DropdownEntry 没有分隔线参数，无法做分组。
-                    Box {
-                        var menuAnchorBounds by remember { mutableStateOf(Rect.Zero) }
-                        GlassIconButton(
+                    // 菜单弹层 GlassDropdownPopup 挂在页面根叠加层宿主里（Scaffold 内容的
+                    // 外层 Box）。BoxScope 弹层必须放在全屏宿主中，塞进顶栏小 Box 会让
+                    // 窗口 bounds 映射错位：菜单弹到左边、表面盖住顶栏、材质变不透明。
+                    GlassIconButton(
                         onClick = { showMenu = true },
                         modifier = Modifier.onGloballyPositioned {
                             menuAnchorBounds = it.boundsInWindow()
                         },
                     ) {
-                            Icon(
-                                imageVector = MiuixIcons.More,
-                                tint = MiuixTheme.colorScheme.onBackground,
-                                contentDescription = stringResource(R.string.more_options),
-                            )
-                        }
-                        GlassDropdownPopup(
-                            show = showMenu,
-                            onDismissRequest = { showMenu = false },
-                            anchorBounds = menuAnchorBounds,
-                            backdrop = glassBackdrop,
-                        ) {
-                            ListPopupColumn {
-                                if (selecting) {
-                                    val count = 5
-                                    DropdownImpl(
-                                        text = stringResource(R.string.batch_select_enabled_group),
-                                        optionSize = count,
-                                        isSelected = false,
-                                        index = 0,
-                                        onSelectedIndexChange = {
-                                            showMenu = false
-                                            hapticToggle(true)
-                                            selected = selected + enabledShown.map { it.packageName }
-                                        },
-                                    )
-                                    DropdownImpl(
-                                        text = stringResource(R.string.batch_select_disabled_group),
-                                        optionSize = count,
-                                        isSelected = false,
-                                        index = 1,
-                                        onSelectedIndexChange = {
-                                            showMenu = false
-                                            hapticToggle(true)
-                                            selected = selected + disabledShown.map { it.packageName }
-                                        },
-                                    )
-                                    DropdownImpl(
-                                        text = stringResource(R.string.batch_clear_selection),
-                                        optionSize = count,
-                                        isSelected = false,
-                                        index = 2,
-                                        onSelectedIndexChange = {
-                                            showMenu = false
-                                            selected = emptySet()
-                                        },
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 16.dp),
-                                    )
-                                    DropdownImpl(
-                                        text = stringResource(R.string.batch_enable_selected_n, selected.size),
-                                        optionSize = count,
-                                        isSelected = false,
-                                        index = 3,
-                                        onSelectedIndexChange = {
-                                            showMenu = false
-                                            pendingBatch = BatchAction.ENABLE
-                                        },
-                                    )
-                                    DropdownImpl(
-                                        text = stringResource(R.string.batch_disable_selected_n, selected.size),
-                                        optionSize = count,
-                                        isSelected = false,
-                                        index = 4,
-                                        onSelectedIndexChange = {
-                                            showMenu = false
-                                            pendingBatch = BatchAction.DISABLE
-                                        },
-                                    )
-                                } else {
-                                    // 选项总数影响首尾圆角，固定为 5。
-                                    val count = 5
-
-                                    DropdownImpl(
-                                        text = stringResource(R.string.menu_show_system),
-                                        optionSize = count,
-                                        isSelected = showSystemApps,
-                                        index = 0,
-                                        onSelectedIndexChange = {
-                                            hapticToggle(!showSystemApps)
-                                            showSystemApps = !showSystemApps
-                                            store.setShowSystemApps(showSystemApps)
-                                        },
-                                    )
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 16.dp),
-                                    )
-
-                                    DropdownImpl(
-                                        text = stringResource(R.string.sort_install_time),
-                                        optionSize = count,
-                                        isSelected = sortMode == SortMode.INSTALL_TIME,
-                                        index = 1,
-                                        onSelectedIndexChange = {
-                                            if (sortMode != SortMode.INSTALL_TIME) hapticToggle(true)
-                                            sortMode = SortMode.INSTALL_TIME
-                                            store.setSortMode(sortMode.name)
-                                        },
-                                    )
-                                    DropdownImpl(
-                                        text = stringResource(R.string.sort_alphabet),
-                                        optionSize = count,
-                                        isSelected = sortMode == SortMode.ALPHABET,
-                                        index = 2,
-                                        onSelectedIndexChange = {
-                                            if (sortMode != SortMode.ALPHABET) hapticToggle(true)
-                                            sortMode = SortMode.ALPHABET
-                                            store.setSortMode(sortMode.name)
-                                        },
-                                    )
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 16.dp),
-                                    )
-
-                                    DropdownImpl(
-                                        text = stringResource(R.string.sort_asc),
-                                        optionSize = count,
-                                        isSelected = sortOrder == SortOrder.ASC,
-                                        index = 3,
-                                        onSelectedIndexChange = {
-                                            if (sortOrder != SortOrder.ASC) hapticToggle(true)
-                                            sortOrder = SortOrder.ASC
-                                            store.setSortOrder(sortOrder.name)
-                                        },
-                                    )
-                                    DropdownImpl(
-                                        text = stringResource(R.string.sort_desc),
-                                        optionSize = count,
-                                        isSelected = sortOrder == SortOrder.DESC,
-                                        index = 4,
-                                        onSelectedIndexChange = {
-                                            if (sortOrder == SortOrder.DESC) return@DropdownImpl
-                                            hapticToggle(true)
-                                            sortOrder = SortOrder.DESC
-                                            store.setSortOrder(sortOrder.name)
-                                        },
-                                    )
-                                }
-                            }
-                        }
+                        Icon(
+                            imageVector = MiuixIcons.More,
+                            tint = MiuixTheme.colorScheme.onBackground,
+                            contentDescription = stringResource(R.string.more_options),
+                        )
                     }
                 },
             )
@@ -947,6 +810,144 @@ internal fun PermNullScreen(
         // 回顶按钮必须在外层：它自己也要 textureBlur 读 backdrop，
         // 若放在录制层内部会自引用，导致 RenderNode 递归过深、native 栈溢出闪退。
         Box(modifier = Modifier.fillMaxSize()) {
+        // 更多菜单（玻璃下拉弹层）：全屏叠加层宿主，锚点在顶栏按钮。
+            GlassDropdownPopup(
+                show = showMenu,
+                onDismissRequest = { showMenu = false },
+                anchorBounds = menuAnchorBounds,
+                backdrop = glassBackdrop,
+            ) {
+                ListPopupColumn {
+                    if (selecting) {
+                        val count = 5
+                        DropdownImpl(
+                            text = stringResource(R.string.batch_select_enabled_group),
+                            optionSize = count,
+                            isSelected = false,
+                            index = 0,
+                            onSelectedIndexChange = {
+                                showMenu = false
+                                hapticToggle(true)
+                                selected = selected + enabledShown.map { it.packageName }
+                            },
+                        )
+                        DropdownImpl(
+                            text = stringResource(R.string.batch_select_disabled_group),
+                            optionSize = count,
+                            isSelected = false,
+                            index = 1,
+                            onSelectedIndexChange = {
+                                showMenu = false
+                                hapticToggle(true)
+                                selected = selected + disabledShown.map { it.packageName }
+                            },
+                        )
+                        DropdownImpl(
+                            text = stringResource(R.string.batch_clear_selection),
+                            optionSize = count,
+                            isSelected = false,
+                            index = 2,
+                            onSelectedIndexChange = {
+                                showMenu = false
+                                selected = emptySet()
+                            },
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                        DropdownImpl(
+                            text = stringResource(R.string.batch_enable_selected_n, selected.size),
+                            optionSize = count,
+                            isSelected = false,
+                            index = 3,
+                            onSelectedIndexChange = {
+                                showMenu = false
+                                pendingBatch = BatchAction.ENABLE
+                            },
+                        )
+                        DropdownImpl(
+                            text = stringResource(R.string.batch_disable_selected_n, selected.size),
+                            optionSize = count,
+                            isSelected = false,
+                            index = 4,
+                            onSelectedIndexChange = {
+                                showMenu = false
+                                pendingBatch = BatchAction.DISABLE
+                            },
+                        )
+                    } else {
+                        // 选项总数影响首尾圆角，固定为 5。
+                        val count = 5
+
+                        DropdownImpl(
+                            text = stringResource(R.string.menu_show_system),
+                            optionSize = count,
+                            isSelected = showSystemApps,
+                            index = 0,
+                            onSelectedIndexChange = {
+                                hapticToggle(!showSystemApps)
+                                showSystemApps = !showSystemApps
+                                store.setShowSystemApps(showSystemApps)
+                            },
+                        )
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+
+                        DropdownImpl(
+                            text = stringResource(R.string.sort_install_time),
+                            optionSize = count,
+                            isSelected = sortMode == SortMode.INSTALL_TIME,
+                            index = 1,
+                            onSelectedIndexChange = {
+                                if (sortMode != SortMode.INSTALL_TIME) hapticToggle(true)
+                                sortMode = SortMode.INSTALL_TIME
+                                store.setSortMode(sortMode.name)
+                            },
+                        )
+                        DropdownImpl(
+                            text = stringResource(R.string.sort_alphabet),
+                            optionSize = count,
+                            isSelected = sortMode == SortMode.ALPHABET,
+                            index = 2,
+                            onSelectedIndexChange = {
+                                if (sortMode != SortMode.ALPHABET) hapticToggle(true)
+                                sortMode = SortMode.ALPHABET
+                                store.setSortMode(sortMode.name)
+                            },
+                        )
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+
+                        DropdownImpl(
+                            text = stringResource(R.string.sort_asc),
+                            optionSize = count,
+                            isSelected = sortOrder == SortOrder.ASC,
+                            index = 3,
+                            onSelectedIndexChange = {
+                                if (sortOrder != SortOrder.ASC) hapticToggle(true)
+                                sortOrder = SortOrder.ASC
+                                store.setSortOrder(sortOrder.name)
+                            },
+                        )
+                        DropdownImpl(
+                            text = stringResource(R.string.sort_desc),
+                            optionSize = count,
+                            isSelected = sortOrder == SortOrder.DESC,
+                            index = 4,
+                            onSelectedIndexChange = {
+                                if (sortOrder == SortOrder.DESC) return@DropdownImpl
+                                hapticToggle(true)
+                                sortOrder = SortOrder.DESC
+                                store.setSortOrder(sortOrder.name)
+                            },
+                        )
+                    }
+                }
+            }
         Box(modifier = Modifier.fillMaxSize().asGlassSource(glassBackdrop)) {
             // 下拉刷新：顶部内边距交给 PullToRefresh 以偏移指示器，
             // AppBar 的滚动通过 topAppBarScrollBehavior 协调（内部已接 nestedScroll）。
@@ -1480,7 +1481,14 @@ internal fun PermNullScreen(
                     // 用 NoIndication 覆盖整棵子树：按压高亮是矩形，Card 内部 Column
                     // 不裁剪圆角，会露出方角白块。
                     CompositionLocalProvider(LocalIndication provides NoIndication) {
-                        LazyColumn(modifier = Modifier.fillMaxWidth().padding(innerPadding)) {
+                        // contentPadding 而不是 modifier.padding：padding 会把 LazyColumn
+                        // 视口裁到 header 之下，内容滚不出去、渐进模糊带下永远没有内容可糊。
+                        // contentPadding 让内容真的穿过 header 区域，滚动时被渐进模糊带糊掉
+                        //（同主页顶栏的效果）。
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = innerPadding,
+                        ) {
                             item {
                                 // 规则统一，只在顶部说明一次，避免每行重复既占屏又难扫读。
                                 SmallTitle(
